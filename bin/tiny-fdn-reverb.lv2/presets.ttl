@@ -1,0 +1,13 @@
+@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
+@prefix pset:  <http://lv2plug.in/ns/ext/presets#> .
+
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset001>
+    lv2:port [
+        lv2:symbol "rt60" ;
+        pset:value 1.79999995232 ;
+    ] ,
+    [
+        lv2:symbol "mix" ;
+        pset:value 0.5 ;
+    ] .
+

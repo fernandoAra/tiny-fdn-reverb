@@ -1,143 +1,80 @@
 /*
  * tiny-fdn-reverb audio effect based on DISTRHO Plugin Framework (DPF)
- *
- * SPDX-License-Identifier: Apache-2.0
- *
- * Copyright (C) 2025 Fernando de Souza Araujo <faraujo0080@gmail.com>
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
 
-#ifndef PLUGIN_TINY-FDN-REVERB_H
-#define PLUGIN_TINY-FDN-REVERB_H
+#ifndef PLUGIN_TINY_FDN_REVERB_HPP
+#define PLUGIN_TINY_FDN_REVERB_HPP
 
 #include "DistrhoPlugin.hpp"
 #include "CParamSmooth.hpp"
+#include <array>
+#include <memory>
+#include <vector>
 
 START_NAMESPACE_DISTRHO
 
-#ifndef MIN
-#define MIN(a,b) ( (a) < (b) ? (a) : (b) )
-#endif
-
-#ifndef MAX
-#define MAX(a,b) ( (a) > (b) ? (a) : (b) )
-#endif
-
-#ifndef CLAMP
-#define CLAMP(v, min, max) (MIN((max), MAX((min), (v))))
-#endif
-
-#ifndef DB_CO
-#define DB_CO(g) ((g) > -90.0f ? powf(10.0f, (g) * 0.05f) : 0.0f)
-#endif
-
-// -----------------------------------------------------------------------
-
-class Plugintiny-fdn-reverb : public Plugin {
+class PluginTinyFdnReverb : public Plugin {
 public:
+    // ---- parameters ----
     enum Parameters {
-        paramGain = 0,
+        paramRt60 = 0,   // seconds
+        paramMix,        // 0..1
         paramCount
     };
 
-    Plugintiny-fdn-reverb();
-
-    ~Plugintiny-fdn-reverb();
+    PluginTinyFdnReverb();
+    ~PluginTinyFdnReverb() override {}
 
 protected:
-    // -------------------------------------------------------------------
-    // Information
+    // ---- required metadata ----
+    const char* getLabel()   const override;
+    const char* getMaker()   const override;
+    const char* getLicense() const override;
+    uint32_t    getVersion() const override;
+    int64_t     getUniqueId() const override;
 
-    const char* getLabel() const noexcept override {
-        return "tiny-fdn-reverb";
-    }
-
-    const char* getDescription() const override {
-        return "Small-order FDN reverb (N=4–8) that tames metallic ring via echo-density targeting and AM-safe unitary modulation.";
-    }
-
-    const char* getMaker() const noexcept override {
-        return "N/A";
-    }
-
-    const char* getHomePage() const override {
-        return "https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb";
-    }
-
-    const char* getLicense() const noexcept override {
-        return "https://spdx.org/licenses/Apache-2.0";
-    }
-
-    uint32_t getVersion() const noexcept override {
-        return d_version(0, 1, 0);
-    }
-
-    // Go to:
-    //
-    // http://service.steinberg.de/databases/plugin.nsf/plugIn
-    //
-    // Get a proper plugin UID and fill it in here!
-    int64_t getUniqueId() const noexcept override {
-        return d_cconst('a', 'b', 'c', 'd');
-    }
-
-    // -------------------------------------------------------------------
-    // Init
-
-    void initParameter(uint32_t index, Parameter& parameter) override;
-    void initProgramName(uint32_t index, String& programName) override;
-
-    // -------------------------------------------------------------------
-    // Internal data
-
+    // ---- params ----
+    void  initParameter(uint32_t index, Parameter& parameter) override;
     float getParameterValue(uint32_t index) const override;
-    void setParameterValue(uint32_t index, float value) override;
+    void  setParameterValue(uint32_t index, float value) override;
+
+    // ---- programs (optional) ----
+    void initProgramName(uint32_t index, String& programName) override;
     void loadProgram(uint32_t index) override;
 
-    // -------------------------------------------------------------------
-    // Optional
-
-    // Optional callback to inform the plugin about a sample rate change.
-    void sampleRateChanged(double newSampleRate) override;
-
-    // -------------------------------------------------------------------
-    // Process
-
-    void activate() override;
-
-    void run(const float**, float** outputs, uint32_t frames) override;
-
-
-    // -------------------------------------------------------------------
+    // ---- lifecycle / processing ----
+    void activate() override; // clear buffers
+    void run(const float** inputs, float** outputs, uint32_t frames) override;
 
 private:
-    float           fParams[paramCount];
-    double          fSampleRate;
-    float           gain;
-    CParamSmooth    *smooth_gain;
+    // ====== FDN-4 core (fixed for Day-1) ======
+    static constexpr int kN = 4;
+    static constexpr int kMaxDelay = 96000; // 2s @ 48k (ample headroom)
 
-    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Plugintiny-fdn-reverb)
+    // base delay lengths at 48kHz, in samples (≈31, 49, 67, 92 ms)
+    static constexpr std::array<int, kN> kBase48 = {1499, 2377, 3217, 4421};
+
+    // state
+    double fLastSR;
+    float  fRt60;                 // seconds
+    float  fMix;                  // 0..1
+    CParamSmooth fMixSmoothL;     // 10 ms smoothing
+    CParamSmooth fMixSmoothR;
+
+    // delay lines
+    std::array<std::vector<float>, kN> mBuf;  // each size = kMaxDelay (allocated once)
+    std::array<int, kN> mLen;                 // actual lengths in samples (scaled by SR)
+    std::array<int, kN> mIdx;                 // write indices
+    std::array<float, kN> mGain;              // per-line loss from RT60
+
+    // helpers
+    void updateDelaysForSR(double sr) noexcept;
+    void updateLineGainsFromRt60(double sr) noexcept;
+
+    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginTinyFdnReverb)
 };
-
-struct Preset {
-    const char* name;
-    float params[Plugintiny-fdn-reverb::paramCount];
-};
-
-const Preset factoryPresets[] = {
-    {
-        "Unity Gain",
-        {0.0f}
-    }
-    //,{
-    //    "Another preset",  // preset name
-    //    {-14.0f, ...}      // array of presetCount float param values
-    //}
-};
-
-const uint presetCount = sizeof(factoryPresets) / sizeof(Preset);
-
-// -----------------------------------------------------------------------
 
 END_NAMESPACE_DISTRHO
 
-#endif  // #ifndef PLUGIN_TINY-FDN-REVERB_H
+#endif // PLUGIN_TINY_FDN_REVERB_HPP
