@@ -1,12 +1,12 @@
 /*
- * tiny-fdn-reverb UI based on DPF
- * SPDX-License-Identifier: Apache-2.0 OR MIT
+ * Tiny FDN Reverb — minimal UI (NanoVG)
+ * SPDX-License-Identifier: MIT OR Apache-2.0
  */
-
 #ifndef UI_TINY_FDN_REVERB_HPP
 #define UI_TINY_FDN_REVERB_HPP
 
 #include "DistrhoUI.hpp"
+#include "Plugintiny-fdn-reverb.hpp" // adjust name if your plugin header differs
 
 START_NAMESPACE_DISTRHO
 
@@ -15,17 +15,47 @@ public:
     UITinyFdnReverb();
 
 protected:
-    void parameterChanged(uint32_t, float) override {}
+    // plugin → UI updates
+    void parameterChanged(uint32_t index, float value) override;
     void programLoaded(uint32_t) override {}
-    void sampleRateChanged(double) override {}
-    void uiIdle() override {}
-    void uiReshape(uint, uint) override {}
+
+    // drawing
     void onNanoDisplay() override;
 
+    // mouse input
+    bool onMouse(const MouseEvent& ev) override;
+    bool onMotion(const MotionEvent& ev) override;
+
+public: // <-- make Rect public so free helpers can use it
+    struct Rect { float x,y,w,h; };
+
 private:
+    // local copies of parameters
+    float fRt60 = 2.8f;
+    float fMix  = 1.0f;
+    int   fMatrixType = 0; // 0 Hadamard, 1 Householder
+    int   fDelaySet   = 0; // 0 Prime,    1 Spread
+
+    // dragging state
+    enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX } fDragging = DRAG_NONE;
+
+    // layout rects
+    Rect rRt60, rMix, rDecay, rMatrix, rDelay;
+
+    // layout + drawing helpers (no NVGcontext arg)
+    void layout();
+    void drawSlider(const Rect& r, const char* label, float v, float vmin, float vmax);
+    void drawToggle(const Rect& r, const char* label, const char* a, const char* b, int v);
+    void drawDecay(const Rect& r, float rt60);
+    static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
+
+    // notify host when editing
+    void beginEdit(uint32_t idx) { editParameter(idx, true); }
+    void endEdit  (uint32_t idx) { editParameter(idx, false); }
+    void setParam (uint32_t idx, float v) { setParameterValue(idx, v); }
+
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(UITinyFdnReverb)
 };
 
 END_NAMESPACE_DISTRHO
-
-#endif // UI_TINY_FDN_REVERB_HPP
+#endif

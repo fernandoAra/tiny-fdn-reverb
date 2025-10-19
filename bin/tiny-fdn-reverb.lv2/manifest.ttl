@@ -19,3 +19,9 @@
     rdfs:label "Default" ;
     rdfs:seeAlso <presets.ttl> .
 
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset002>
+    a pset:Preset ;
+    lv2:appliesTo <https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb> ;
+    rdfs:label "House+Spread" ;
+    rdfs:seeAlso <presets.ttl> .
+
