@@ -21,7 +21,6 @@ protected:
 
     // drawing
     void onNanoDisplay() override;
-
     // mouse input
     bool onMouse(const MouseEvent& ev) override;
     bool onMotion(const MotionEvent& ev) override;
@@ -35,12 +34,20 @@ private:
     float fMix  = 1.0f;
     int   fMatrixType = 0; // 0 Hadamard, 1 Householder
     int   fDelaySet   = 0; // 0 Prime,    1 Spread
+    float fSize    = 1.0f;
+    float fDampHz  = 6000.0f;
+    float fMorph   = 0.0f;
+    float fEDTms = 0.f, fRT60est = 0.f, fDen100 = 0.f, fDen300 = 0.f;
+    
 
     // dragging state
-    enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX } fDragging = DRAG_NONE;
+    enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX, DRAG_SIZE, DRAG_DAMP, DRAG_MORPH } fDragging = DRAG_NONE;
 
     // layout rects
-    Rect rRt60, rMix, rDecay, rMatrix, rDelay;
+    Rect rMatrix{}, rDelay{};
+    Rect rRt60{}, rSize{}, rDamp{}, rMix{}, rDecay{};
+    Rect rPreset{}, rMatH{}, rMatHo{}, rMorph{};
+    Rect rPing{};
 
     // layout + drawing helpers (no NVGcontext arg)
     void layout();

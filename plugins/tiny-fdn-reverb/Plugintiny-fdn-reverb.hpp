@@ -11,6 +11,7 @@
 #include <vector>
 #include <memory>
 
+
 START_NAMESPACE_DISTRHO
 
 class PluginTinyFdnReverb : public Plugin {
@@ -21,6 +22,13 @@ public:
         paramMatrixType, // 0=Hadamard, 1=Householder
         paramDelaySet,   // 0=Prime,    1=Spread
         paramSize,       // 0.5..2.0 scalar on delays (optional but handy)
+        paramDampHz,       // 1500..12000 Hz low-pass in the loop
+        paramMatrixMorph,  // 0..1: 0 Hadamard → 1 Householder (smooth blend)
+        paramPing,         // momentary trigger for one-sample impulse
+        paramEDTms,          // Early Decay Time (ms)
+        paramRT60est,        // Estimated RT60 (s) from measured EDC
+        paramDensity100ms,   // events/ms @100 ms
+        paramDensity300ms,   // events/ms @300 ms
         paramCount
     };
 
@@ -55,8 +63,8 @@ private:
 
     // two base delay sets at 48k (samples)
     static constexpr std::array<int,kN> kBasePrime48  = {1499, 2377, 3217, 4421};
-    static constexpr std::array<int,kN> kBaseSpread48 = {1103, 1733, 2549, 3917};
-
+    // Near-commensurate 'Spread' to create obvious metallic modes
+    static constexpr std::array<int,kN> kBaseSpread48 = {1200, 1800, 2400, 3000};
     // state
     double fLastSR;
     float  fRt60;   // seconds
@@ -64,11 +72,41 @@ private:
     int    fMatrixType; // 0/1
     int    fDelaySet;   // 0/1
     float  fSize;       // 0.5..2.0
+    float fDampHz      = 6000.0f;  // Hz
+    float fMatrixMorph = 0.0f;     // 0..1
+    int   fPing        = 0;        // momentary
+    float mLP[kN] = {0,0,0,0};
+    float fAppliedSize = 1.0f;
+    int   fAppliedDelaySet = 0;
+    int   fAppliedMatrixType = 0;
+
+    // short mute after topology changes (samples)
+    int   mMuteSamples = 0;
+
+    // helper to clear state without clicks
+    void  resetStateForTopologyChange() noexcept;
+
+    // --- IR capture for metrics (2 s @ 48k) ---
+    static constexpr int kIRMax = 96000;
+    std::array<float, kIRMax> mIR{};
+    int   irWrite = 0;
+    bool  irCapturing = false;
+    bool  irReady     = false;
+
+    // metrics
+    float mEDTms = 0.f;      // ms
+    float mRT60s = 0.f;      // s
+    float mDen100 = 0.f;     // events/ms
+    float mDen300 = 0.f;     // events/ms
+    // throttle UI updates to ~20 Hz
+    uint32_t mSamplesSincePush = 0;
 
     // smoothers (10 ms)
     CParamSmooth fMixSmoothL;
     CParamSmooth fMixSmoothR;
     CParamSmooth fRt60Smooth;
+    CParamSmooth fDampSmooth   {10.0f, 48000.0}; // updated on SR change
+    CParamSmooth fMorphSmooth  {10.0f, 48000.0};
 
     // delay lines
     std::array<std::vector<float>, kN> mBuf;

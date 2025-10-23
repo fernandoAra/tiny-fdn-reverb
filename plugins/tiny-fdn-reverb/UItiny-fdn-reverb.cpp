@@ -5,6 +5,8 @@
 #include "UItiny-fdn-reverb.hpp"
 #include "NanoVG.hpp"   // NVGcontext + nvg* API
 #include <cmath>
+#include <algorithm>
+
 
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
@@ -40,20 +42,48 @@ UITinyFdnReverb::UITinyFdnReverb()
 }
 
 void UITinyFdnReverb::layout() {
-    const float PAD = 16.0f;
+    const float PAD = 16.f;
     const float W = getWidth(), H = getHeight();
-    const float SL_H = 28.0f;
-    const float BTN_H = 28.0f;
-    const float DEC_H = 90.0f;
 
-    rMatrix = { PAD, PAD, (W - 3*PAD)/2.0f, BTN_H };
-    rDelay  = { rMatrix.x + rMatrix.w + PAD, PAD, (W - 3*PAD)/2.0f, BTN_H };
+    const float headerH = 28.f;
+    rPreset = { PAD, headerH + 8.f, W - 2*PAD, 28.f };
 
-    rRt60 =  { PAD, rMatrix.y + rMatrix.h + PAD, W - 2*PAD, SL_H };
-    rMix  =  { PAD, rRt60.y + rRt60.h + PAD*0.75f, W - 2*PAD, SL_H };
+    // Two-column layout
+    const float COL_GAP = 16.f;
+    const float leftW  = (W - 3*PAD) * 0.55f;        // ~55% for controls
+    const float rightW = (W - 3*PAD) - leftW;        // rest for visuals
+    const float leftX  = PAD;
+    const float rightX = PAD + leftW + COL_GAP;
 
-    rDecay = { PAD, H - DEC_H - PAD, W - 2*PAD, DEC_H };
+    // Row heights
+    const float TOG_H = 28.f;
+    const float SL_H  = 28.f;
+
+    rPing = { rPreset.x + rPreset.w - 70.f, rPreset.y + 4.f, 62.f, rPreset.h - 8.f };
+
+    // Top toggles (left column)
+    rMatrix = { leftX, rPreset.y + rPreset.h + 10.f, (leftW - PAD)/2.f, TOG_H };
+    rDelay  = { rMatrix.x + rMatrix.w + 10.f, rMatrix.y, (leftW - PAD)/2.f, TOG_H };
+
+    // Sliders (left column)
+    rRt60 = { leftX, rMatrix.y + rMatrix.h + 12.f, leftW, SL_H };
+    rSize = { leftX, rRt60.y + rRt60.h + 10.f,     leftW, SL_H };
+    rDamp = { leftX, rSize.y + rSize.h + 10.f,     leftW, SL_H };
+    rMix  = { leftX, rDamp.y + rDamp.h + 10.f,     leftW, SL_H };
+
+    // Decay panel (left column bottom)
+    const float decH = 100.f;
+    rDecay = { leftX, H - decH - PAD, leftW, decH };
+
+    // Right column: two matrix tiles stacked
+    const float tileH = (H - rPreset.y - rPreset.h - 3*PAD) * 0.45f;
+    rMatH  = { rightX, rMatrix.y, rightW, tileH };
+    rMatHo = { rightX, rMatH.y + rMatH.h + 10.f, rightW, tileH };
+
+    // Morph slider under right tiles
+    rMorph = { rightX, rMatHo.y + rMatHo.h + 10.f, rightW, SL_H };
 }
+
 
 void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     switch (index) {
@@ -61,6 +91,13 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramMix:        fMix = value; break;
     case PluginTinyFdnReverb::paramMatrixType: fMatrixType = int(std::lround(value)); break;
     case PluginTinyFdnReverb::paramDelaySet:   fDelaySet   = int(std::lround(value)); break;
+    case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
+    case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
+    case PluginTinyFdnReverb::paramMatrixMorph:  fMorph  = value; break;
+    case PluginTinyFdnReverb::paramEDTms:         fEDTms   = value; break;
+    case PluginTinyFdnReverb::paramRT60est:       fRT60est = value; break;
+    case PluginTinyFdnReverb::paramDensity100ms:  fDen100  = value; break;
+    case PluginTinyFdnReverb::paramDensity300ms:  fDen300  = value; break;
     default: break;
     }
     repaint();
@@ -83,6 +120,34 @@ static void drawPanel(UITinyFdnReverb* self, float x, float y, float w, float h,
     self->roundedRect(x, y, w, h, float(rr));
     self->fillColor(r,g,b);
     self->fill();
+}
+
+static void drawDensityBars(UITinyFdnReverb* self,
+                            const UITinyFdnReverb::Rect& r, float d100, float d300)
+{
+    const float maxD = 50.f;
+    const float barW = 18.f;
+    const float gap  = 10.f;
+    const float baseY = r.y + r.h - 12.f;
+    const float x0 = r.x + r.w - (2*barW + gap) - 10.f;
+
+    auto clamp01 = [](float v){ return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); };
+
+    auto bar = [&](float x, float d, const char* lab) {
+        const float t = clamp01(d / maxD);
+        const float h = (r.h - 28.f) * t;
+        self->beginPath();
+        self->roundedRect(x, baseY - h, barW, h, 3.f);
+        self->fillColor(Color(120,180,255));
+        self->fill();
+        self->fontSize(11.f);
+        self->fillColor(Color(50,50,50));
+        self->textAlign(UITinyFdnReverb::ALIGN_CENTER | UITinyFdnReverb::ALIGN_MIDDLE);
+        self->text(x + barW*0.5f, baseY + 8.f, lab, nullptr);
+    };
+
+    bar(x0,                d100, "100");
+    bar(x0 + barW + gap,   d300, "300");
 }
 
 void UITinyFdnReverb::drawSlider(const Rect& r, const char* label,
@@ -161,6 +226,15 @@ void UITinyFdnReverb::drawDecay(const Rect& r, float rt60)
         const float y = r.y + (1.0f - e) * r.h;
         if (i==0) moveTo(x, y); else lineTo(x, y);
     }
+
+    // EDT marker as a dot on the analytic curve at t = EDT/1000
+    if (rt60 > 0.01f) {
+        const float tEdt = std::max(0.f, std::min(2.0f, fEDTms/1000.f)); // needs fEDTms accessible here
+        const float e    = std::exp(-tEdt * 6.91f / std::max(0.05f, rt60));
+        const float x    = r.x + (tEdt/2.0f) * r.w;
+        const float y    = r.y + (1.0f - e) * r.h;
+        beginPath(); circle(x, y, 3.f); fillColor(Color(220,80,80)); fill();
+    }
     strokeWidth(2.f);
     strokeColor(40,40,40);
     stroke();
@@ -168,43 +242,149 @@ void UITinyFdnReverb::drawDecay(const Rect& r, float rt60)
     drawLabel(this, r.x+10, r.y-8, "Decay (analytic)", 12.f, 60,60,60);
 }
 
+static void drawMatrixTile(UITinyFdnReverb* self, const UITinyFdnReverb::Rect& r,
+                           const char* title, const float m[4][4], bool active)
+{
+    // panel with subtle highlight if active
+    self->beginPath();
+    self->roundedRect(r.x, r.y, r.w, r.h, 6.f);
+    self->fillColor(active ? Color(238,246,255) : Color(245,245,245));
+    self->fill();
+
+    // title
+    self->fontSize(14.f);
+    self->fillColor(Color(40,40,40));
+    self->textAlign(UITinyFdnReverb::ALIGN_LEFT | UITinyFdnReverb::ALIGN_MIDDLE);
+    self->text(r.x + 10.f, r.y + 14.f, title, nullptr);
+
+    // grid
+    const float gx = r.x + 10.f, gy = r.y + 28.f;
+    const float gw = r.w - 20.f, gh = r.h - 38.f;
+    const float cw = gw / 4.f,   ch = gh / 4.f;
+
+    for (int i=0;i<4;++i) for (int j=0;j<4;++j) {
+        const float v = m[i][j]; // expect ±0.5
+        const int R = (v < 0.f) ? int(180.f * (-v / 0.5f)) : 0;
+        const int B = (v > 0.f) ? int(180.f * ( v / 0.5f)) : 0;
+        self->beginPath();
+        self->rect(gx + j*cw, gy + i*ch, cw-2.f, ch-2.f);
+        self->fillColor(Color(240 - R/3, 240 - (R+B)/6, 240 - B/3));
+        self->fill();
+        // sign marker
+        self->fontSize(12.f);
+        self->fillColor(Color(50,50,50));
+        self->textAlign(UITinyFdnReverb::ALIGN_CENTER | UITinyFdnReverb::ALIGN_MIDDLE);
+        const char* s = (v >= 0.f) ? "+" : "–";
+        self->text(gx + j*cw + cw*0.5f, gy + i*ch + ch*0.5f, s, nullptr);
+    }
+}
+
 void UITinyFdnReverb::onNanoDisplay()
 {
-    // background
-    beginPath();
-    rect(0, 0, getWidth(), getHeight());
-    fillColor(Color(250,250,250));
-    fill();
+    // background + header
+    beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
+    beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
+    fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+    text(12, 14, "Tiny FDN Reverb — matrix × delay, RT60, size, damping", nullptr);
 
-    // header strip
-    beginPath();
-    rect(0, 0, getWidth(), 28);
-    fillColor(Color(245,245,245));
-    fill();
-    fontSize(42.f);
-    fillColor(Color(30,30,30));
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb — RT60/Mix, Matrix, Delay-Set", nullptr);
+    // preset strip
+    drawPanel(this, rPreset.x, rPreset.y, rPreset.w, rPreset.h, 6, 235,235,235);
+    const char* labs[4] = { "H+Prime", "H+Spread", "House+Prime", "House+Spread" };
+    const int target[4][2] = {{0,0},{0,1},{1,0},{1,1}};
+    const float segW = rPreset.w / 4.f;
+    for (int s=0; s<4; ++s) {
+        const float sx = rPreset.x + s*segW + 3.f;
+        const bool on = (fMatrixType==target[s][0] && fDelaySet==target[s][1]);
+        beginPath(); roundedRect(sx, rPreset.y+3.f, segW-6.f, rPreset.h-6.f, 4.f);
+        fillColor(on ? Color(120,180,255) : Color(210,210,210)); fill();
+        fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+        text(sx + (segW-6.f)*0.5f, rPreset.y + rPreset.h*0.5f, labs[s], nullptr);
+    }
 
-    // widgets
+    beginPath();
+    roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
+    fillColor(Color(170,130,255)); fill(); //change color to pop
+    fontSize(12.f); fillColor(Color(255,255,255));
+    textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+    text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
+
+    // toggles + sliders (left column)
     drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
     drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
-    drawSlider(rRt60, "RT60", fRt60, 0.20f, 8.00f);
-    drawSlider(rMix,  "Mix",  fMix,  0.00f, 1.00f);
-    drawDecay(rDecay, fRt60);
+    drawSlider(rRt60, "RT60",     fRt60,   0.20f, 8.00f);
+    drawSlider(rSize, "Size",     fSize,   0.50f, 2.00f);
+    // Damping shows Hz
+    drawPanel(this, rDamp.x, rDamp.y, rDamp.w, rDamp.h, 6, 235,235,235);
+    // reuse slider visuals but custom right label "Hz"
+    {
+        const float t = (fDampHz - 1500.f) / (12000.f - 1500.f);
+        const float knobX = rDamp.x + 8 + (rDamp.w - 16) * clampf(t,0.f,1.f);
+        beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, rDamp.w-16, 6, 3); fillColor(Color(210,210,210)); fill();
+        beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, (knobX - (rDamp.x+8)), 6, 3); fillColor(Color(120,180,255)); fill();
+        beginPath(); circle(knobX, rDamp.y + rDamp.h*0.5f, 9.f); fillColor(Color(40,40,40)); fill();
+        char hz[64]; std::snprintf(hz, sizeof(hz), "%.0f Hz", fDampHz);
+        drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", 13.f, 50,50,50);
+        drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, 13.f, 50,50,50);
+    }
+    drawSlider(rMix,  "Mix",      fMix,    0.00f, 1.00f);
+    const float rt_for_plot = (fRT60est > 0.f ? fRT60est : fRt60);
+    drawDecay(rDecay, rt_for_plot);
+    drawDensityBars(this, rDecay, fDen100, fDen300);
 
-    // dynamic captions under the toggles
+    // matrix tiles (right column)
+    float Hm[4][4] = {
+        {+0.5f,+0.5f,+0.5f,+0.5f},
+        {+0.5f,-0.5f,+0.5f,-0.5f},
+        {+0.5f,+0.5f,-0.5f,-0.5f},
+        {+0.5f,-0.5f,-0.5f,+0.5f}
+    };
+    float Ho[4][4];
+    for(int i=0;i<4;++i) for(int j=0;j<4;++j) Ho[i][j] = (i==j)?0.5f:-0.5f;
+
+    const bool actH  = (fMatrixType==0 && fMorph < 0.5f);
+    const bool actHo = (fMatrixType==1 ||  fMorph >= 0.5f);
+    drawMatrixTile(this, rMatH,  "Matrix: Hadamard (signed sums)", Hm, actH);
+    drawMatrixTile(this, rMatHo, "Matrix: Householder (reflection)", Ho, actHo);
+
+    // Morph slider (right column)
+    drawSlider(rMorph, "Morph (H ⟷ House)", fMorph, 0.0f, 1.0f);
+
+    // metrics readout
+    fontSize(12.f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
+    char m1[128], m2[128];
+    std::snprintf(m1, sizeof(m1), "EDT: %.0f ms   RT60(est): %.2f s", fEDTms, fRT60est);
+    std::snprintf(m2, sizeof(m2), "Echo density: 100 ms = %.2f ev/ms   300 ms = %.2f ev/ms", fDen100, fDen300);
+    text(rDecay.x, rDecay.y + rDecay.h + 14.f, m1, nullptr);
+    text(rDecay.x, rDecay.y + rDecay.h + 30.f, m2, nullptr);
+
+    // density bars under the numbers (max scale ~ 30 ev/ms)
+    const float barW = 120.f, barH = 8.f, gap = 6.f;
+    const float s100 = std::min(1.f, fDen100 / 30.f);
+    const float s300 = std::min(1.f, fDen300 / 30.f);
+
+    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f, barW, barH, 3.f);
+    fillColor(Color(220,220,220)); fill();
+    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f, barW*s100, barH, 3.f);
+    fillColor(Color(120,180,255)); fill();
+
+    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f + barH + gap, barW, barH, 3.f);
+    fillColor(Color(220,220,220)); fill();
+    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f + barH + gap, barW*s300, barH, 3.f);
+    fillColor(Color(120,180,255)); fill();
+
+    fontSize(11.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
+    text(rDecay.x + barW + 8.f, rDecay.y + rDecay.h + 44.f + barH*0.5f,  "Density @100 ms", nullptr);
+    text(rDecay.x + barW + 8.f, rDecay.y + rDecay.h + 44.f + barH*1.5f + gap, "Density @300 ms", nullptr);
+
+    // captions under toggles
+    fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
     char line[64];
-    fontSize(38.f);
-    fillColor(Color(60,60,60));
-    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-
     std::snprintf(line, sizeof(line), "Matrix: %s", fMatrixType ? "Householder" : "Hadamard");
-    text(rMatrix.x, rMatrix.y + rMatrix.h + 14.f, line, nullptr);
-
+    text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
     std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
-    text(rDelay.x,  rDelay.y  + rDelay.h  + 14.f, line, nullptr);
+    text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
 }
+
 
 
 static bool pointIn(const UITinyFdnReverb::Rect& r, float x, float y) {
@@ -214,23 +394,40 @@ static bool pointIn(const UITinyFdnReverb::Rect& r, float x, float y) {
 bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
     const float x = ev.pos.getX();
     const float y = ev.pos.getY();
+
     if (ev.press) {
         // sliders
-        if (pointIn(rRt60, x, y)) {
-            fDragging = DRAG_RT60; beginEdit(PluginTinyFdnReverb::paramRt60);
+        if (pointIn(rRt60, x, y)) { fDragging = DRAG_RT60; beginEdit(PluginTinyFdnReverb::paramRt60); return true; }
+        if (pointIn(rSize, x, y))  { fDragging = DRAG_SIZE; beginEdit(PluginTinyFdnReverb::paramSize); return true; }
+        if (pointIn(rDamp, x, y))  { fDragging = DRAG_DAMP; beginEdit(PluginTinyFdnReverb::paramDampHz); return true; }
+        if (pointIn(rMix,  x, y))  { fDragging = DRAG_MIX;  beginEdit(PluginTinyFdnReverb::paramMix); return true; }
+        if (pointIn(rMorph,x, y))  { fDragging = DRAG_MORPH;beginEdit(PluginTinyFdnReverb::paramMatrixMorph); return true; }
+
+        // Ping click
+        if (pointIn(rPing, x, y) && ev.press) {
+            beginEdit(PluginTinyFdnReverb::paramPing);
+            setParam(PluginTinyFdnReverb::paramPing, 1.0f);
+            endEdit(PluginTinyFdnReverb::paramPing);
             return true;
         }
-        if (pointIn(rMix, x, y)) {
-            fDragging = DRAG_MIX;  beginEdit(PluginTinyFdnReverb::paramMix);
-            return true;
-        }
+
         // toggles
         if (pointIn(rMatrix, x, y)) {
             const float half = rMatrix.w*0.5f;
             fMatrixType = (x < rMatrix.x+half) ? 0 : 1;
+
+            // existing notify
             beginEdit(PluginTinyFdnReverb::paramMatrixType);
             setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
             endEdit(PluginTinyFdnReverb::paramMatrixType);
+
+            // NEW: snap Morph to 0 (Hadamard) or 1 (Householder) so you HEAR the change
+            const float snap = fMatrixType ? 1.0f : 0.0f;
+            fMorph = snap;
+            beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+            setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+            endEdit(PluginTinyFdnReverb::paramMatrixMorph);
+
             repaint();
             return true;
         }
@@ -240,35 +437,75 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             beginEdit(PluginTinyFdnReverb::paramDelaySet);
             setParam(PluginTinyFdnReverb::paramDelaySet, float(fDelaySet));
             endEdit(PluginTinyFdnReverb::paramDelaySet);
-            repaint();
+            repaint(); return true;
+        }
+
+        // preset strip
+        if (pointIn(rPreset, x, y)) {
+            const float segW = rPreset.w / 4.f;
+            const int s = int((x - rPreset.x) / segW);
+            if (s >= 0 && s < 4) {
+                const int m = (s < 2) ? 0 : 1;
+                const int d = (s % 2 == 0) ? 0 : 1;
+                beginEdit(PluginTinyFdnReverb::paramMatrixType);
+                setParam(PluginTinyFdnReverb::paramMatrixType, float(m));
+                endEdit(PluginTinyFdnReverb::paramMatrixType);
+                beginEdit(PluginTinyFdnReverb::paramDelaySet);
+                setParam(PluginTinyFdnReverb::paramDelaySet, float(d));
+                endEdit(PluginTinyFdnReverb::paramDelaySet);
+                // Snap Morph to match (0=Hadamard, 1=Householder)
+                beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+                setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
+                endEdit(PluginTinyFdnReverb::paramMatrixMorph);
+                repaint();
+            }
             return true;
         }
     } else {
-        // mouse release
-        if (fDragging == DRAG_RT60) { endEdit(PluginTinyFdnReverb::paramRt60); fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_MIX)  { endEdit(PluginTinyFdnReverb::paramMix);  fDragging = DRAG_NONE; return true; }
+        // release
+        if (fDragging == DRAG_RT60)  { endEdit(PluginTinyFdnReverb::paramRt60);        fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_SIZE)  { endEdit(PluginTinyFdnReverb::paramSize);        fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_DAMP)  { endEdit(PluginTinyFdnReverb::paramDampHz);      fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MIX)   { endEdit(PluginTinyFdnReverb::paramMix);         fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MORPH) { endEdit(PluginTinyFdnReverb::paramMatrixMorph); fDragging = DRAG_NONE; return true; }
     }
     return false;
 }
 
+
 bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
     if (fDragging == DRAG_NONE) return false;
     const float x = ev.pos.getX();
-    const Rect& r = (fDragging == DRAG_RT60 ? rRt60 : rMix);
-    const float t = clampf((x - (r.x+8)) / (r.w - 16), 0.f, 1.f);
+
+    auto sliderT = [&](const Rect& r) {
+        return clampf((x - (r.x+8)) / (r.w - 16), 0.f, 1.f);
+    };
 
     if (fDragging == DRAG_RT60) {
+        const float t = sliderT(rRt60);
         const float v = 0.20f + t * (8.00f - 0.20f);
-        fRt60 = v;
-        setParam(PluginTinyFdnReverb::paramRt60, v);
+        fRt60 = v; setParam(PluginTinyFdnReverb::paramRt60, v);
+    } else if (fDragging == DRAG_SIZE) {
+        const float t = sliderT(rSize);
+        const float v = 0.50f + t * (2.00f - 0.50f);
+        fSize = v; setParam(PluginTinyFdnReverb::paramSize, v);
+    } else if (fDragging == DRAG_DAMP) {
+        const float t = sliderT(rDamp);
+        const float v = 1500.0f + t * (12000.0f - 1500.0f);
+        fDampHz = v; setParam(PluginTinyFdnReverb::paramDampHz, v);
     } else if (fDragging == DRAG_MIX) {
-        const float v = t; // 0..1
-        fMix = v;
-        setParam(PluginTinyFdnReverb::paramMix, v);
+        const float t = sliderT(rMix);
+        const float v = t;
+        fMix = v; setParam(PluginTinyFdnReverb::paramMix, v);
+    } else if (fDragging == DRAG_MORPH) {
+        const float t = sliderT(rMorph);
+        const float v = t;
+        fMorph = v; setParam(PluginTinyFdnReverb::paramMatrixMorph, v);
     }
     repaint();
     return true;
 }
+
 
 UI* createUI() { return new UITinyFdnReverb(); }
 

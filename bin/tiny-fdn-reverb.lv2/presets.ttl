@@ -21,6 +21,18 @@
     [
         lv2:symbol "size" ;
         pset:value 1 ;
+    ] ,
+    [
+        lv2:symbol "damp" ;
+        pset:value 6000 ;
+    ] ,
+    [
+        lv2:symbol "mmorph" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "ping" ;
+        pset:value 0 ;
     ] .
 
 <https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset002>
@@ -43,5 +55,17 @@
     [
         lv2:symbol "size" ;
         pset:value 1.10000002384 ;
+    ] ,
+    [
+        lv2:symbol "damp" ;
+        pset:value 6000 ;
+    ] ,
+    [
+        lv2:symbol "mmorph" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "ping" ;
+        pset:value 0 ;
     ] .
 
