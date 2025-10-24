@@ -33,6 +33,22 @@
     [
         lv2:symbol "ping" ;
         pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "moddepth" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "detune" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "metal" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "burst" ;
+        pset:value 0 ;
     ] .
 
 <https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset002>
@@ -58,7 +74,7 @@
     ] ,
     [
         lv2:symbol "damp" ;
-        pset:value 6000 ;
+        pset:value 5000 ;
     ] ,
     [
         lv2:symbol "mmorph" ;
@@ -66,6 +82,22 @@
     ] ,
     [
         lv2:symbol "ping" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "moddepth" ;
+        pset:value 0.20000000298 ;
+    ] ,
+    [
+        lv2:symbol "detune" ;
+        pset:value 0.10000000149 ;
+    ] ,
+    [
+        lv2:symbol "metal" ;
+        pset:value 0 ;
+    ] ,
+    [
+        lv2:symbol "burst" ;
         pset:value 0 ;
     ] .
 

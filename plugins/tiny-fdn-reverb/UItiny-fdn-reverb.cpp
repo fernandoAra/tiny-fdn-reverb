@@ -6,13 +6,22 @@
 #include "NanoVG.hpp"   // NVGcontext + nvg* API
 #include <cmath>
 #include <algorithm>
-
+#include <cstring>
+#include <cstdio>
+#include <mutex>
+static FILE* gTFDNLogUI = nullptr;
+static std::once_flag gTFDNOnceUI;
+static void tfdn_open_log_ui() { gTFDNLogUI = std::fopen("/tmp/tfdn.log", "a"); }
+#define DBG(...) do { \
+    std::call_once(gTFDNOnceUI, tfdn_open_log_ui); \
+    if (gTFDNLogUI) { std::fprintf(gTFDNLogUI, __VA_ARGS__); std::fprintf(gTFDNLogUI, "\n"); std::fflush(gTFDNLogUI);} \
+} while(0)
 
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
 UITinyFdnReverb::UITinyFdnReverb()
-: UI(1040, 480)
+: UI(1040, 520) // +40px for extra row
 {
     // Try a few common macOS fonts; pick the first that loads.
     int fid = -1;
@@ -59,24 +68,30 @@ void UITinyFdnReverb::layout() {
     const float TOG_H = 28.f;
     const float SL_H  = 28.f;
 
-    rPing = { rPreset.x + rPreset.w - 70.f, rPreset.y + 4.f, 62.f, rPreset.h - 8.f };
+    // Buttons
+    rPing  = { rPreset.x + rPreset.w - 70.f, rPreset.y + 4.f, 62.f, rPreset.h - 8.f };
+    rBurst = { rPing.x - 72.f, rPing.y, 62.f, rPing.h };
 
     // Top toggles (left column)
     rMatrix = { leftX, rPreset.y + rPreset.h + 10.f, (leftW - PAD)/2.f, TOG_H };
     rDelay  = { rMatrix.x + rMatrix.w + 10.f, rMatrix.y, (leftW - PAD)/2.f, TOG_H };
+    rMetal  = { leftX, rMatrix.y + rMatrix.h + 10.f, leftW, TOG_H };
 
     // Sliders (left column)
-    rRt60 = { leftX, rMatrix.y + rMatrix.h + 12.f, leftW, SL_H };
-    rSize = { leftX, rRt60.y + rRt60.h + 10.f,     leftW, SL_H };
-    rDamp = { leftX, rSize.y + rSize.h + 10.f,     leftW, SL_H };
-    rMix  = { leftX, rDamp.y + rDamp.h + 10.f,     leftW, SL_H };
+    rRt60 = { leftX, rMetal.y + rMetal.h + 10.f, leftW, SL_H };
+    rSize = { leftX, rRt60.y + rRt60.h + 10.f,   leftW, SL_H };
+    rDamp = { leftX, rSize.y + rSize.h + 10.f,   leftW, SL_H };
+    rMix  = { leftX, rDamp.y + rDamp.h + 10.f,   leftW, SL_H };
+    rMod  = { leftX, rMix.y  + rMix.h  + 10.f,   leftW, SL_H };
+    rDet  = { leftX, rMod.y  + rMod.h  + 10.f,   leftW, SL_H };
 
     // Decay panel (left column bottom)
     const float decH = 100.f;
-    rDecay = { leftX, H - decH - PAD, leftW, decH };
+    rDecay = { leftX, H - decH - 2*PAD, leftW, decH };
+    rRing  = { leftX, rDecay.y + rDecay.h + 8.f, leftW, 22.f };
 
     // Right column: two matrix tiles stacked
-    const float tileH = (H - rPreset.y - rPreset.h - 3*PAD) * 0.45f;
+    const float tileH = (H - rPreset.y - rPreset.h - 4*PAD) * 0.45f;
     rMatH  = { rightX, rMatrix.y, rightW, tileH };
     rMatHo = { rightX, rMatH.y + rMatH.h + 10.f, rightW, tileH };
 
@@ -94,10 +109,16 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
     case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
     case PluginTinyFdnReverb::paramMatrixMorph:  fMorph  = value; break;
-    case PluginTinyFdnReverb::paramEDTms:         fEDTms   = value; break;
-    case PluginTinyFdnReverb::paramRT60est:       fRT60est = value; break;
-    case PluginTinyFdnReverb::paramDensity100ms:  fDen100  = value; break;
-    case PluginTinyFdnReverb::paramDensity300ms:  fDen300  = value; break;
+
+    case PluginTinyFdnReverb::paramModDepth:  fModDepth = value; break;
+    case PluginTinyFdnReverb::paramDetune:    fDetune   = value; break;
+    case PluginTinyFdnReverb::paramMetalBoost:fMetallic = int(std::lround(value)); break;
+
+    case PluginTinyFdnReverb::paramEDTms:         fEDTms     = value; break;
+    case PluginTinyFdnReverb::paramRT60est:       fRT60est   = value; break;
+    case PluginTinyFdnReverb::paramDensity100ms:  fDen100    = value; break;
+    case PluginTinyFdnReverb::paramDensity300ms:  fDen300    = value; break;
+    case PluginTinyFdnReverb::paramRinginess:     fRinginess = value; break;
     default: break;
     }
     repaint();
@@ -179,10 +200,10 @@ void UITinyFdnReverb::drawSlider(const Rect& r, const char* label,
 
     // left label + right value (with units)
     char buf[64];
-    if (std::strcmp(label, "RT60") == 0) std::snprintf(buf, sizeof(buf), "%.2f s", v);
-    else                                 std::snprintf(buf, sizeof(buf), "%.0f %%", v*100.f);
+    if (std::strcmp(label, "RT60") == 0)          std::snprintf(buf, sizeof(buf), "%.2f s", v);
+    else if (std::strcmp(label, "Damp (Hz)") == 0)std::snprintf(buf, sizeof(buf), "%.0f Hz", v);
+    else                                          std::snprintf(buf, sizeof(buf), "%.0f %%", v*100.f);
 
-    // draw inside the slider row so it’s always visible
     drawLabel(this, r.x + 10,         r.y - 4, label, 13.f, 50,50,50);
     drawLabel(this, r.x + r.w - 70.f, r.y - 4, buf,   13.f, 50,50,50);
 }
@@ -242,6 +263,7 @@ void UITinyFdnReverb::drawDecay(const Rect& r, float rt60)
     drawLabel(this, r.x+10, r.y-8, "Decay (analytic)", 12.f, 60,60,60);
 }
 
+// ✅ Re-add the matrix tile helper
 static void drawMatrixTile(UITinyFdnReverb* self, const UITinyFdnReverb::Rect& r,
                            const char* title, const float m[4][4], bool active)
 {
@@ -279,6 +301,40 @@ static void drawMatrixTile(UITinyFdnReverb* self, const UITinyFdnReverb::Rect& r
     }
 }
 
+// Ringiness meter: 0..1 bar with label
+void UITinyFdnReverb::drawRingMeter(const Rect& r, float v)
+{
+    // background panel
+    drawPanel(this, r.x, r.y, r.w, r.h, 6, 235,235,235);
+
+    // label
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Ringiness: %.2f", v);
+    fontSize(12.f);
+    fillColor(Color(60,60,60));
+    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+    text(r.x + 10.f, r.y - 4.f, buf, nullptr);
+
+    // bar background
+    const float innerX = r.x + 8.f;
+    const float innerW = r.w - 16.f;
+    const float innerY = r.y + r.h*0.5f - 4.f;
+    const float h      = 8.f;
+
+    beginPath();
+    roundedRect(innerX, innerY, innerW, h, 3.f);
+    fillColor(Color(220,220,220));
+    fill();
+
+    // bar fill (0..1)
+    const float t = clampf(v, 0.f, 1.f);
+    beginPath();
+    roundedRect(innerX, innerY, innerW * t, h, 3.f);
+    // reddish to stand out from the blue sliders
+    fillColor(Color(240,120,120));
+    fill();
+}
+
 void UITinyFdnReverb::onNanoDisplay()
 {
     // background + header
@@ -301,9 +357,15 @@ void UITinyFdnReverb::onNanoDisplay()
         text(sx + (segW-6.f)*0.5f, rPreset.y + rPreset.h*0.5f, labs[s], nullptr);
     }
 
-    beginPath();
-    roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
-    fillColor(Color(170,130,255)); fill(); //change color to pop
+    // Buttons
+    beginPath(); roundedRect(rBurst.x, rBurst.y, rBurst.w, rBurst.h, 4.f);
+    fillColor(Color(255,150,120)); fill();
+    fontSize(12.f); fillColor(Color(255,255,255));
+    textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+    text(rBurst.x + rBurst.w*0.5f, rBurst.y + rBurst.h*0.5f, "Burst", nullptr);
+
+    beginPath(); roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
+    fillColor(Color(170,130,255)); fill();
     fontSize(12.f); fillColor(Color(255,255,255));
     textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
     text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
@@ -311,11 +373,19 @@ void UITinyFdnReverb::onNanoDisplay()
     // toggles + sliders (left column)
     drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
     drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
+
+    // Metallic Boost (single toggle row)
+    drawPanel(this, rMetal.x, rMetal.y, rMetal.w, rMetal.h, 6, 235,235,235);
+    beginPath(); roundedRect(rMetal.x+4, rMetal.y+4, rMetal.w-8, rMetal.h-8, 4.f);
+    fillColor(fMetallic ? Color(240,120,120) : Color(210,210,210)); fill();
+    fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+    text(rMetal.x + (rMetal.w-8)*0.5f, rMetal.y + rMetal.h*0.5f, "Over-spread delays", nullptr);
+
     drawSlider(rRt60, "RT60",     fRt60,   0.20f, 8.00f);
     drawSlider(rSize, "Size",     fSize,   0.50f, 2.00f);
+
     // Damping shows Hz
     drawPanel(this, rDamp.x, rDamp.y, rDamp.w, rDamp.h, 6, 235,235,235);
-    // reuse slider visuals but custom right label "Hz"
     {
         const float t = (fDampHz - 1500.f) / (12000.f - 1500.f);
         const float knobX = rDamp.x + 8 + (rDamp.w - 16) * clampf(t,0.f,1.f);
@@ -326,10 +396,17 @@ void UITinyFdnReverb::onNanoDisplay()
         drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", 13.f, 50,50,50);
         drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, 13.f, 50,50,50);
     }
-    drawSlider(rMix,  "Mix",      fMix,    0.00f, 1.00f);
+
+    drawSlider(rMix,  "Mix",       fMix,      0.00f, 1.00f);
+    drawSlider(rMod,  "Mod Depth", fModDepth, 0.00f, 1.00f);
+    drawSlider(rDet,  "Detune",    fDetune,   0.00f, 1.00f);
+
     const float rt_for_plot = (fRT60est > 0.f ? fRT60est : fRt60);
     drawDecay(rDecay, rt_for_plot);
     drawDensityBars(this, rDecay, fDen100, fDen300);
+
+    // ringiness meter
+    drawRingMeter(rRing, fRinginess);
 
     // matrix tiles (right column)
     float Hm[4][4] = {
@@ -357,24 +434,8 @@ void UITinyFdnReverb::onNanoDisplay()
     text(rDecay.x, rDecay.y + rDecay.h + 14.f, m1, nullptr);
     text(rDecay.x, rDecay.y + rDecay.h + 30.f, m2, nullptr);
 
-    // density bars under the numbers (max scale ~ 30 ev/ms)
-    const float barW = 120.f, barH = 8.f, gap = 6.f;
-    const float s100 = std::min(1.f, fDen100 / 30.f);
-    const float s300 = std::min(1.f, fDen300 / 30.f);
-
-    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f, barW, barH, 3.f);
-    fillColor(Color(220,220,220)); fill();
-    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f, barW*s100, barH, 3.f);
-    fillColor(Color(120,180,255)); fill();
-
-    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f + barH + gap, barW, barH, 3.f);
-    fillColor(Color(220,220,220)); fill();
-    beginPath(); roundedRect(rDecay.x, rDecay.y + rDecay.h + 44.f + barH + gap, barW*s300, barH, 3.f);
-    fillColor(Color(120,180,255)); fill();
-
     fontSize(11.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
-    text(rDecay.x + barW + 8.f, rDecay.y + rDecay.h + 44.f + barH*0.5f,  "Density @100 ms", nullptr);
-    text(rDecay.x + barW + 8.f, rDecay.y + rDecay.h + 44.f + barH*1.5f + gap, "Density @300 ms", nullptr);
+    text(rDecay.x + rDecay.w + 8.f, rRing.y + rRing.h*0.5f, "Higher bar = more comb/metallicity", nullptr);
 
     // captions under toggles
     fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
@@ -402,12 +463,20 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         if (pointIn(rDamp, x, y))  { fDragging = DRAG_DAMP; beginEdit(PluginTinyFdnReverb::paramDampHz); return true; }
         if (pointIn(rMix,  x, y))  { fDragging = DRAG_MIX;  beginEdit(PluginTinyFdnReverb::paramMix); return true; }
         if (pointIn(rMorph,x, y))  { fDragging = DRAG_MORPH;beginEdit(PluginTinyFdnReverb::paramMatrixMorph); return true; }
+        if (pointIn(rMod,  x, y))  { fDragging = DRAG_MOD;  beginEdit(PluginTinyFdnReverb::paramModDepth); return true; }
+        if (pointIn(rDet,  x, y))  { fDragging = DRAG_DETUNE;beginEdit(PluginTinyFdnReverb::paramDetune); return true; }
 
-        // Ping click
-        if (pointIn(rPing, x, y) && ev.press) {
+        // Ping / Burst
+        if (pointIn(rPing, x, y)) {
             beginEdit(PluginTinyFdnReverb::paramPing);
             setParam(PluginTinyFdnReverb::paramPing, 1.0f);
             endEdit(PluginTinyFdnReverb::paramPing);
+            return true;
+        }
+        if (pointIn(rBurst, x, y)) {
+            beginEdit(PluginTinyFdnReverb::paramExciteNoise);
+            setParam(PluginTinyFdnReverb::paramExciteNoise, 1.0f);
+            endEdit(PluginTinyFdnReverb::paramExciteNoise);
             return true;
         }
 
@@ -416,12 +485,12 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             const float half = rMatrix.w*0.5f;
             fMatrixType = (x < rMatrix.x+half) ? 0 : 1;
 
-            // existing notify
             beginEdit(PluginTinyFdnReverb::paramMatrixType);
             setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
             endEdit(PluginTinyFdnReverb::paramMatrixType);
+            DBG("[UI] Matrix toggle → %d", fMatrixType);
 
-            // NEW: snap Morph to 0 (Hadamard) or 1 (Householder) so you HEAR the change
+            // Snap Morph to match (0=Hadamard, 1=Householder)
             const float snap = fMatrixType ? 1.0f : 0.0f;
             fMorph = snap;
             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
@@ -437,6 +506,14 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             beginEdit(PluginTinyFdnReverb::paramDelaySet);
             setParam(PluginTinyFdnReverb::paramDelaySet, float(fDelaySet));
             endEdit(PluginTinyFdnReverb::paramDelaySet);
+            DBG("[UI] Delay toggle → %d (%s)", fDelaySet, fDelaySet? "Spread":"Prime");
+            repaint(); return true;
+        }
+        if (pointIn(rMetal, x, y)) {
+            fMetallic = !fMetallic;
+            beginEdit(PluginTinyFdnReverb::paramMetalBoost);
+            setParam(PluginTinyFdnReverb::paramMetalBoost, float(fMetallic));
+            endEdit(PluginTinyFdnReverb::paramMetalBoost);
             repaint(); return true;
         }
 
@@ -453,6 +530,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
                 beginEdit(PluginTinyFdnReverb::paramDelaySet);
                 setParam(PluginTinyFdnReverb::paramDelaySet, float(d));
                 endEdit(PluginTinyFdnReverb::paramDelaySet);
+                DBG("[UI] Preset click → Matrix=%d Delay=%d", m, d);
                 // Snap Morph to match (0=Hadamard, 1=Householder)
                 beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
                 setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
@@ -463,11 +541,13 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         }
     } else {
         // release
-        if (fDragging == DRAG_RT60)  { endEdit(PluginTinyFdnReverb::paramRt60);        fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_SIZE)  { endEdit(PluginTinyFdnReverb::paramSize);        fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_DAMP)  { endEdit(PluginTinyFdnReverb::paramDampHz);      fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_MIX)   { endEdit(PluginTinyFdnReverb::paramMix);         fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_MORPH) { endEdit(PluginTinyFdnReverb::paramMatrixMorph); fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_RT60)   { endEdit(PluginTinyFdnReverb::paramRt60);        fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_SIZE)   { endEdit(PluginTinyFdnReverb::paramSize);        fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_DAMP)   { endEdit(PluginTinyFdnReverb::paramDampHz);      fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MIX)    { endEdit(PluginTinyFdnReverb::paramMix);         fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MORPH)  { endEdit(PluginTinyFdnReverb::paramMatrixMorph); fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MOD)    { endEdit(PluginTinyFdnReverb::paramModDepth);    fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_DETUNE) { endEdit(PluginTinyFdnReverb::paramDetune);      fDragging = DRAG_NONE; return true; }
     }
     return false;
 }
@@ -483,7 +563,7 @@ bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
 
     if (fDragging == DRAG_RT60) {
         const float t = sliderT(rRt60);
-        const float v = 0.20f + t * (8.00f - 0.20f);
+               const float v = 0.20f + t * (8.00f - 0.20f);
         fRt60 = v; setParam(PluginTinyFdnReverb::paramRt60, v);
     } else if (fDragging == DRAG_SIZE) {
         const float t = sliderT(rSize);
@@ -501,6 +581,14 @@ bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
         const float t = sliderT(rMorph);
         const float v = t;
         fMorph = v; setParam(PluginTinyFdnReverb::paramMatrixMorph, v);
+    } else if (fDragging == DRAG_MOD) {
+        const float t = sliderT(rMod);
+        const float v = t;
+        fModDepth = v; setParam(PluginTinyFdnReverb::paramModDepth, v);
+    } else if (fDragging == DRAG_DETUNE) {
+        const float t = sliderT(rDet);
+        const float v = t;
+        fDetune = v; setParam(PluginTinyFdnReverb::paramDetune, v);
     }
     repaint();
     return true;

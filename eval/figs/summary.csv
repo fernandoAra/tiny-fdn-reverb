@@ -1,0 +1,5 @@
+file,label,rt60_s,edt_ms,peak_density_100ms_s,mean_density_s
+eval/signals/IR_Hadamard_Prime.wav,Hadamard-Prime,0.5348,89.13,800.00,5.00
+eval/signals/IR_Hadamard_Spread.wav,Hadamard-Spread,0.3970,66.16,800.00,6.67
+eval/signals/IR_House_Prime.wav,Householder-Prime,0.6435,107.25,900.00,5.00
+eval/signals/IR_House_Spread.wav,Householder-Spread,0.3544,59.07,800.00,6.33

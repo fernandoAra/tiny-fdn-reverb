@@ -6,7 +6,7 @@
 #define UI_TINY_FDN_REVERB_HPP
 
 #include "DistrhoUI.hpp"
-#include "Plugintiny-fdn-reverb.hpp" // adjust name if your plugin header differs
+#include "Plugintiny-fdn-reverb.hpp"
 
 START_NAMESPACE_DISTRHO
 
@@ -25,7 +25,7 @@ protected:
     bool onMouse(const MouseEvent& ev) override;
     bool onMotion(const MotionEvent& ev) override;
 
-public: // <-- make Rect public so free helpers can use it
+public:
     struct Rect { float x,y,w,h; };
 
 private:
@@ -37,23 +37,32 @@ private:
     float fSize    = 1.0f;
     float fDampHz  = 6000.0f;
     float fMorph   = 0.0f;
-    float fEDTms = 0.f, fRT60est = 0.f, fDen100 = 0.f, fDen300 = 0.f;
     
 
+    // NEW controls
+    float fModDepth = 0.0f;
+    float fDetune   = 0.0f;
+    int   fMetallic = 0;
+    // Outputs
+    float fEDTms = 0.f, fRT60est = 0.f, fDen100 = 0.f, fDen300 = 0.f;
+    float fRinginess = 0.f;
+
     // dragging state
-    enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX, DRAG_SIZE, DRAG_DAMP, DRAG_MORPH } fDragging = DRAG_NONE;
+    enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX, DRAG_SIZE, DRAG_DAMP, DRAG_MORPH, DRAG_MOD, DRAG_DETUNE } fDragging = DRAG_NONE;
 
     // layout rects
     Rect rMatrix{}, rDelay{};
     Rect rRt60{}, rSize{}, rDamp{}, rMix{}, rDecay{};
     Rect rPreset{}, rMatH{}, rMatHo{}, rMorph{};
-    Rect rPing{};
+    Rect rPing{}, rBurst{}, rMetal{}, rMod{}, rDet{};
+    Rect rRing{};
 
-    // layout + drawing helpers (no NVGcontext arg)
+    // layout + drawing helpers
     void layout();
     void drawSlider(const Rect& r, const char* label, float v, float vmin, float vmax);
     void drawToggle(const Rect& r, const char* label, const char* a, const char* b, int v);
     void drawDecay(const Rect& r, float rt60);
+    void drawRingMeter(const Rect& r, float v);
     static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 
     // notify host when editing
