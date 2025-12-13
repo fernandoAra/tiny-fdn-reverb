@@ -3,6 +3,7 @@
  *
  * https://www.musicdsp.org/en/latest/Filters/257-1-pole-lpf-for-smooth-parameter-changes.html
  */
+// [BOILERPLATE-UTILITY: standard param smoother adapted from musicdsp.org; used as-is]
 
 #ifndef C_PARAM_SMOOTH_H
 #define C_PARAM_SMOOTH_H

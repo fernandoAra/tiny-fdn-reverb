@@ -11,6 +11,7 @@
 #include <vector>
 #include <memory>
 
+// [BOILERPLATE: DPF namespace macros]
 START_NAMESPACE_DISTRHO
 
 class PluginTinyFdnReverb : public Plugin {
@@ -44,6 +45,7 @@ public:
     ~PluginTinyFdnReverb() override {}
 
 protected:
+    // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
     // metadata
     const char* getLabel()   const override;
     const char* getMaker()   const override;
@@ -59,14 +61,19 @@ protected:
     // programs
     void initProgramName(uint32_t index, String& programName) override;
     void loadProgram(uint32_t index) override;
+    // === BOILERPLATE END ===
 
     // lifecycle / audio
     void activate() override;
     void run(const float** inputs, float** outputs, uint32_t frames) override;
 
 private:
-    // ===== core =====
-    static constexpr int kN = 4;
+    // === Dal Santo-style homogeneous tiny FDN core ======================
+    // - 4 delay lines (kN = 4)
+    // - Feedback matrix A = U * Gamma, where U is unilossless (Hadamard/Householder)
+    // - Homogeneous decay: per-line gains mGain[i] = gamma^{mLen[i]},
+    //   with gamma derived from RT60 and sample rate (Dal Santo 2023/2025).
+    static constexpr int kN        = 4;
     static constexpr int kMaxDelay = 96000; // 2s @ 48k
 
     // two base delay sets at 48k (samples)
@@ -74,16 +81,16 @@ private:
     // Near-commensurate 'Spread' to create obvious metallic modes
     static constexpr std::array<int,kN> kBaseSpread48 = {1200, 1800, 2400, 3000};
 
-    // state
-    double fLastSR;
-    float  fRt60;         // seconds
-    float  fMix;          // 0..1
-    int    fMatrixType;   // 0/1
-    int    fDelaySet;     // 0/1
-    float  fSize;         // 0.5..2.0
-    float  fDampHz      = 6000.0f;  // Hz
-    float  fMatrixMorph = 0.0f;     // 0..1
-    int    fPing        = 0;        // momentary
+    // Core controls (smoothed)
+    float  fLastSR      = 48000.f;
+    float  fRt60        = 1.5f;
+    float  fMix         = 0.25f;
+    int    fMatrixType  = 0;
+    int    fDelaySet    = 0;
+    float  fSize        = 1.0f;
+    float  fDampHz      = 6000.f;
+    float  fMatrixMorph = 0.0f;
+    int    fPing        = 0;
 
     // NEW interactive controls
     float  fModDepth    = 0.0f;     // 0..1

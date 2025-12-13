@@ -7,7 +7,13 @@
 #include <cstdio>
 #include <mutex>
 
-// --------- very lightweight logger to /tmp/tfdn.log ----------
+// Boilerplate: very lightweight logger to /tmp/tfdn.log
+// (generic helper, not core DSP logic)
+
+// Uncomment to enable heavy logging (NOT RT-safe in production!)
+#define TFDN_ENABLE_LOG 1
+
+#if defined(TFDN_ENABLE_LOG)
 static FILE* gTFDNLog = nullptr;
 static std::once_flag gTFDNOnce;
 
@@ -17,10 +23,18 @@ static void tfdn_open_log() {
 
 #define DBG(...) do { \
     std::call_once(gTFDNOnce, tfdn_open_log); \
-    if (gTFDNLog) { std::fprintf(gTFDNLog, __VA_ARGS__); std::fprintf(gTFDNLog, "\n"); std::fflush(gTFDNLog);} \
+    if (gTFDNLog) { \
+        std::fprintf(gTFDNLog, __VA_ARGS__); \
+        std::fprintf(gTFDNLog, "\n"); \
+        std::fflush(gTFDNLog); \
+    } \
 } while(0)
+#else
+#define DBG(...) do {} while(0)
+#endif
 // --------------------------------------------------------------
 
+// [BOILERPLATE: DPF namespace macros]
 START_NAMESPACE_DISTRHO
 
 // Avoid relying on M_PI
@@ -52,6 +66,9 @@ static inline void dump_state_lengths(const char* tag,
         tag, L[0], L[1], L[2], L[3],
         matrixType ? "Householder" : "Hadamard",
         delaySet   ? "Spread"      : "Prime");
+#if !defined(TFDN_ENABLE_LOG)
+    (void)tag; (void)matrixType; (void)delaySet; (void)L;
+#endif
 }
 
 PluginTinyFdnReverb::PluginTinyFdnReverb()
@@ -71,7 +88,7 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     }
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_v0.1"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
 uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(0,3,1); } // DEMO R4+
@@ -118,7 +135,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.ranges = { 0.0f, 1.0f, 0.0f };
         break;
 
-    // NEW interactive params
+    // interactive params
     case paramModDepth:
         p.hints = kParameterIsAutomable;
         p.name  = "Mod Depth"; p.symbol = "moddepth";
@@ -321,13 +338,19 @@ void PluginTinyFdnReverb::selectBaseAndUpdateDelays(double sr) noexcept {
 }
 
 void PluginTinyFdnReverb::updateLineGainsFromRt60(double sr) noexcept {
-    const float rt60Sm = fRt60Smooth.process(std::max(0.20f, fRt60));
-    const double T60 = std::max(0.05, double(rt60Sm));
-    for (int k=0; k<kN; ++k) {
+    const float rt60Sec = std::max(0.20f, fRt60); // 0.2s min
+    const double T60 = std::max(0.05, double(rt60Sec));
+
+    for (int k = 0; k < kN; ++k) {
         const double Li = double(mLen[k]);
         const double gi = std::pow(10.0, -3.0 * (Li / (T60 * sr)));
         mGain[k] = float(gi);
     }
+
+    DBG("[RT60 DEBUG] fRt60=%.3f sr=%.1f  T60=%.3f  gains={%.6f, %.6f, %.6f, %.6f}",
+        double(fRt60), sr, T60,
+        double(mGain[0]), double(mGain[1]),
+        double(mGain[2]), double(mGain[3]));
 }
 
 inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN]) const noexcept {
@@ -479,8 +502,8 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         const float modDepth= fModSmooth.process(fModDepth);
         const float detu   = fDetuneSmooth.process(fDetune);
 
-        // Hard switch matrix (but we compute both and lerp by 0/1 for safety)
-        const float morphTarget = float(fMatrixType);
+        // Smooth morph parameter 0..1 (Hadamard → Householder)
+        const float morphTarget = fMorphSmooth.process(fMatrixMorph);
 
         // Spread is our “worst-case” metallic set; we still allow modulation unless MetalBoost forces off.
         float modAmt = modDepth;
@@ -680,7 +703,8 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         setParameterValue(paramDensity300ms, mDen300);
         setParameterValue(paramRinginess,    mRinginess);
 
-        DBG("[RUNDBG] matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
+        DBG("[RUNDBG] rt60=%.3f matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
+            double(fRt60),
             fMatrixType ? "Householder" : "Hadamard",
             fDelaySet   ? "Spread"      : "Prime",
             fAppliedMetalBoost,
@@ -692,6 +716,11 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
     }
 }
 
-Plugin* createPlugin() { return new PluginTinyFdnReverb(); }
+// === BOILERPLATE BEGIN: DPF plugin entry point ===
+Plugin* createPlugin()
+{
+    return new PluginTinyFdnReverb();
+}
+// === BOILERPLATE END ===
 
 END_NAMESPACE_DISTRHO

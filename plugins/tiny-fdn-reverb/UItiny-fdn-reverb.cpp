@@ -9,14 +9,22 @@
 #include <cstring>
 #include <cstdio>
 #include <mutex>
-static FILE* gTFDNLogUI = nullptr;
-static std::once_flag gTFDNOnceUI;
-static void tfdn_open_log_ui() { gTFDNLogUI = std::fopen("/tmp/tfdn.log", "a"); }
-#define DBG(...) do { \
-    std::call_once(gTFDNOnceUI, tfdn_open_log_ui); \
-    if (gTFDNLogUI) { std::fprintf(gTFDNLogUI, __VA_ARGS__); std::fprintf(gTFDNLogUI, "\n"); std::fflush(gTFDNLogUI);} \
-} while(0)
+// Uncomment to enable heavy logging (NOT RT-safe!)
+// #define TFDN_ENABLE_LOG 1
 
+#if defined(TFDN_ENABLE_LOG)
+static FILE* gTFDNLog = nullptr;
+static std::once_flag gTFDNOnce;
+static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
+#define DBG(...) do { \
+    std::call_once(gTFDNOnce, tfdn_open_log); \
+    if (gTFDNLog) { std::fprintf(gTFDNLog, __VA_ARGS__); std::fprintf(gTFDNLog, "\n"); std::fflush(gTFDNLog);} \
+} while(0)
+#else
+#define DBG(...) do {} while(0)
+#endif
+
+// [BOILERPLATE: DPF namespace macros]
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
@@ -341,7 +349,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb — matrix × delay, RT60, size, damping", nullptr);
+    text(12, 14, "Tiny FDN Reverb v0.1 — Dal Santo core", nullptr);
 
     // preset strip
     drawPanel(this, rPreset.x, rPreset.y, rPreset.w, rPreset.h, 6, 235,235,235);
@@ -595,6 +603,8 @@ bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
 }
 
 
+// === BOILERPLATE BEGIN: DPF UI factory ===
 UI* createUI() { return new UITinyFdnReverb(); }
+// === BOILERPLATE END ===
 
 END_NAMESPACE_DISTRHO

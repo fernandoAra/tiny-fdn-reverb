@@ -9,6 +9,7 @@
 #ifndef DISTRHO_PLUGIN_INFO_H
 #define DISTRHO_PLUGIN_INFO_H
 
+// === BOILERPLATE BEGIN: Standard DPF plugin info macros (values customized) ===
 // The plugin name.
 // This is used to identify your plugin before a Plugin instance can be created.
 #define DISTRHO_PLUGIN_NAME  "tiny-fdn-reverb"
@@ -38,5 +39,6 @@
 #define DISTRHO_PLUGIN_VST3_CATEGORIES "Fx|Tools|Stereo"
 // See https://github.com/DISTRHO/DPF/blob/1504e7d327bfe0eac6a889cecd199c963d35532f/distrho/DistrhoInfo.hpp#L761
 #define DISTRHO_PLUGIN_CLAP_FEATURES "audio-effect", "utility", "stereo"
+// === BOILERPLATE END ===
 
 #endif // DISTRHO_PLUGIN_INFO_H

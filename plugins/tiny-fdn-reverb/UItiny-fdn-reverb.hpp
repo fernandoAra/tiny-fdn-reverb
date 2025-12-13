@@ -8,8 +8,10 @@
 #include "DistrhoUI.hpp"
 #include "Plugintiny-fdn-reverb.hpp"
 
+// [BOILERPLATE: DPF namespace macros]
 START_NAMESPACE_DISTRHO
 
+// [BOILERPLATE: DPF UI class inherits UI base; layout logic below is project-specific]
 class UITinyFdnReverb : public UI {
 public:
     UITinyFdnReverb();
@@ -70,6 +72,7 @@ private:
     void endEdit  (uint32_t idx) { editParameter(idx, false); }
     void setParam (uint32_t idx, float v) { setParameterValue(idx, v); }
 
+    // [BOILERPLATE: DPF leak detector macro]
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(UITinyFdnReverb)
 };
 
