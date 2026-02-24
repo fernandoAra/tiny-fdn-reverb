@@ -5,6 +5,7 @@
 #include <array>
 #include <numeric>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 // Boilerplate: very lightweight logger to /tmp/tfdn.log
@@ -71,6 +72,31 @@ static inline void dump_state_lengths(const char* tag,
 #endif
 }
 
+uint32_t PluginTinyFdnReverb::floatToBits(const float value) noexcept
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(float));
+    return bits;
+}
+
+float PluginTinyFdnReverb::bitsToFloat(const uint32_t bits) noexcept
+{
+    float value = 0.f;
+    std::memcpy(&value, &bits, sizeof(float));
+    return value;
+}
+
+uint32_t PluginTinyFdnReverb::getEnvTraceWriteIndex() const noexcept
+{
+    return mEnvTraceWrite.load(std::memory_order_acquire);
+}
+
+float PluginTinyFdnReverb::getEnvTraceValue(const uint32_t sequenceIndex) const noexcept
+{
+    const uint32_t bits = mEnvTraceBits[sequenceIndex & (kEnvTraceSize - 1u)].load(std::memory_order_relaxed);
+    return bitsToFloat(bits);
+}
+
 PluginTinyFdnReverb::PluginTinyFdnReverb()
     : Plugin(paramCount, kPresetCount, 0)
     , fLastSR(0.0)
@@ -86,9 +112,13 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
         mLen[i] = 64;
         mGain[i] = 0.0f;
     }
+
+    for (auto& slot : mEnvTraceBits)
+        slot.store(0u, std::memory_order_relaxed);
+    mEnvTraceWrite.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_v0.1"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_0.11"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
 uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(0,3,1); } // DEMO R4+
@@ -178,6 +208,10 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.hints = kParameterIsOutput;
         p.name  = "Ringiness"; p.symbol = "ring";
         p.ranges= {0.f, 1.f, 0.f}; break;
+    case paramWetEnv:
+        p.hints = kParameterIsOutput;
+        p.name  = "Wet Env"; p.symbol = "wetenv";
+        p.ranges= {0.f, 1.f, 0.f}; break;
 
     default: break;
     }
@@ -204,6 +238,7 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     case paramDensity100ms: return mDen100;
     case paramDensity300ms: return mDen300;
     case paramRinginess:    return mRinginess;
+    case paramWetEnv:       return mWetEnv;
 
     default:                return 0.0f;
     }
@@ -285,6 +320,7 @@ void PluginTinyFdnReverb::activate() {
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
     mEDTms = mRT60s = mDen100 = mDen300 = 0.f;
     mRinginess = 0.f;
+    mWetEnv = 0.f;
 
     for (int k=0; k<kN; ++k) {
         std::fill(mBuf[k].begin(), mBuf[k].end(), 0.0f);
@@ -303,6 +339,10 @@ void PluginTinyFdnReverb::activate() {
     mMeterIdx = 0;
     mMeterFilled = false;
     mMeterBuf.fill(0.f);
+
+    for (auto& slot : mEnvTraceBits)
+        slot.store(0u, std::memory_order_relaxed);
+    mEnvTraceWrite.store(0u, std::memory_order_relaxed);
 
     fLastSR = 0.0;
     DBG("[ACT] init done");
@@ -495,6 +535,8 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         DBG("[RUN] Noise burst start (%d samples) + IR capture", mNoiseBurstLeft);
     }
 
+    double wetEnergy = 0.0;
+
     for (uint32_t i=0; i<frames; ++i) {
         const float mixL   = fMixSmoothL.process(fMix);
         const float mixR   = fMixSmoothR.process(fMix);
@@ -589,6 +631,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         wetL *= wetGain; wetR *= wetGain;
 
         const float wetMono = 0.5f * (wetL + wetR);
+        wetEnergy += double(wetMono) * double(wetMono);
 
         // IR capture (mono)
         if (irCapturing) {
@@ -614,6 +657,11 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         if (std::fabs(outL[i]) < 1e-30f) outL[i] = 0.0f;
         if (std::fabs(outR[i]) < 1e-30f) outR[i] = 0.0f;
     } // per-sample
+
+    mWetEnv = (frames > 0u) ? std::sqrt(float(wetEnergy / double(frames))) : 0.f;
+    const uint32_t writeIndex = mEnvTraceWrite.load(std::memory_order_relaxed);
+    mEnvTraceBits[writeIndex & (kEnvTraceSize - 1u)].store(floatToBits(mWetEnv), std::memory_order_relaxed);
+    mEnvTraceWrite.store(writeIndex + 1u, std::memory_order_release);
 
     // If an IR just finished, analyze it once and push metrics
     if (irReady && !irAnalyzed) {
@@ -702,6 +750,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         setParameterValue(paramDensity100ms, mDen100);
         setParameterValue(paramDensity300ms, mDen300);
         setParameterValue(paramRinginess,    mRinginess);
+        setParameterValue(paramWetEnv,       mWetEnv);
 
         DBG("[RUNDBG] rt60=%.3f matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
             double(fRt60),

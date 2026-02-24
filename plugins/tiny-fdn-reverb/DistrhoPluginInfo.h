@@ -32,6 +32,7 @@
 #define DISTRHO_PLUGIN_WANT_PROGRAMS    1
 #define DISTRHO_PLUGIN_WANT_MIDI_INPUT  0
 #define DISTRHO_PLUGIN_WANT_MIDI_OUTPUT 0
+#define DISTRHO_PLUGIN_WANT_DIRECT_ACCESS 1
 
 // See http://lv2plug.in/ns/lv2core#ref-classes
 #define DISTRHO_PLUGIN_LV2_CATEGORY "lv2:AmplifierPlugin"

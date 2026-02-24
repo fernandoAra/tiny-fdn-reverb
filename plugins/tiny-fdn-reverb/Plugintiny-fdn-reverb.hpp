@@ -8,6 +8,8 @@
 #include "DistrhoPlugin.hpp"
 #include "CParamSmooth.hpp"
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <vector>
 #include <memory>
 
@@ -38,11 +40,17 @@ public:
         paramDensity100ms,   // events/ms @100 ms
         paramDensity300ms,   // events/ms @300 ms
         paramRinginess,      // 0..1 periodicity index (higher = more metallic)
+        paramWetEnv,         // 0..1 RMS of wet output (for UI trace fallback)
         paramCount
     };
 
+    static constexpr uint32_t kEnvTraceSize = 256u;
+
     PluginTinyFdnReverb();
     ~PluginTinyFdnReverb() override {}
+
+    uint32_t getEnvTraceWriteIndex() const noexcept;
+    float getEnvTraceValue(uint32_t sequenceIndex) const noexcept;
 
 protected:
     // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
@@ -134,9 +142,14 @@ private:
     float mDen100 = 0.f;     // events/ms
     float mDen300 = 0.f;     // events/ms
     float mRinginess = 0.f;  // 0..1
+    float mWetEnv = 0.f;     // 0..1 block RMS of wet output
 
     // throttle UI updates to ~20 Hz
     uint32_t mSamplesSincePush = 0;
+
+    // Audio-thread writer, UI-thread reader (direct access path).
+    std::array<std::atomic<uint32_t>, kEnvTraceSize> mEnvTraceBits{};
+    std::atomic<uint32_t> mEnvTraceWrite{0};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};
@@ -174,6 +187,8 @@ private:
     inline void hadamardMix4(const float in[kN], float out[kN]) const noexcept;
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
+    static uint32_t floatToBits(float value) noexcept;
+    static float bitsToFloat(uint32_t bits) noexcept;
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginTinyFdnReverb)
 };
