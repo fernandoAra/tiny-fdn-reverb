@@ -43,6 +43,7 @@ public:
         paramDensity300ms,   // events/ms @300 ms
         paramRinginess,      // 0..1 periodicity index (higher = more metallic)
         paramWetEnv,         // 0..1 RMS of wet output (for UI trace fallback)
+        paramHouseholderMode, // 0=fixed u, 1=Diff preset u (Householder branch)
         paramCount
     };
 
@@ -97,6 +98,11 @@ public:
     float getMatrixMorph() const noexcept
     {
         return fMatrixMorph;
+    }
+
+    int getHouseholderMode() const noexcept
+    {
+        return fHouseholderMode;
     }
 
     void setMatrixMorphFromUI(float v) noexcept
@@ -160,6 +166,7 @@ private:
     float  fDampHz      = 6000.f;
     float  fMatrixMorph = 0.0f;
     int    fPing        = 0;
+    int    fHouseholderMode = 0; // 0 fixed, 1 Diff preset u
 
     // NEW interactive controls
     float  fModDepth    = 0.0f;     // 0..1
@@ -182,6 +189,7 @@ private:
     int    fAppliedDelaySet = 0;
     int    fAppliedMatrixType = 0;
     int    fAppliedMetalBoost = 0;
+    int    fAppliedHouseholderMode = 0;
 
     // short mute after topology changes (samples)
     int    mMuteSamples = 0;
@@ -204,6 +212,12 @@ private:
     float mDen300 = 0.f;     // events/ms
     float mRinginess = 0.f;  // 0..1
     float mWetEnv = 0.f;     // 0..1 block RMS of wet output
+
+    // Fixed and learned Householder vectors (unit-norm), selected outside per-sample loop.
+    std::array<float, kN> mHouseholderUFixed {{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mHouseholderUDiff  {{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mHouseholderUActive{{0.5f, 0.5f, 0.5f, 0.5f}};
+    const DiffPreset* mActiveDiffPreset = nullptr;
 
     // throttle UI updates to ~20 Hz
     uint32_t mSamplesSincePush = 0;
@@ -251,7 +265,11 @@ private:
     // helpers
     void selectBaseAndUpdateDelays(double sr) noexcept;
     void updateLineGainsFromRt60(double sr) noexcept;
+    void updateDiffPresetForContext(double sr) noexcept;
+    void updateActiveHouseholderU() noexcept;
+    static void normalizeHouseholderU(std::array<float, kN>& u) noexcept;
     inline void hadamardMix4(const float in[kN], float out[kN]) const noexcept;
+    inline void householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept;
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
     static uint32_t floatToBits(float value) noexcept;

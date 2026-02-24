@@ -97,6 +97,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
         mGain[i] = 0.0f;
     }
 
+    normalizeHouseholderU(mHouseholderUFixed);
+    mHouseholderUDiff = mHouseholderUFixed;
+    mHouseholderUActive = mHouseholderUFixed;
+
     for (auto& slot : mEnvTraceBits)
         slot.store(0u, std::memory_order_relaxed);
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
@@ -202,6 +206,10 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.hints = kParameterIsOutput;
         p.name  = "Wet Env"; p.symbol = "wetenv";
         p.ranges= {0.f, 1.f, 0.f}; break;
+    case paramHouseholderMode:
+        p.hints = kParameterIsAutomable | kParameterIsInteger;
+        p.name  = "Householder Mode"; p.symbol = "housemode";
+        p.ranges= {0.f, 1.f, float(fHouseholderMode)}; break;
 
     default: break;
     }
@@ -229,6 +237,7 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     case paramDensity300ms: return bitsToFloat(mDen300Bits.load(std::memory_order_relaxed));
     case paramRinginess:    return bitsToFloat(mRinginessBits.load(std::memory_order_relaxed));
     case paramWetEnv:       return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
+    case paramHouseholderMode:return float(fHouseholderMode);
 
     default:                return 0.0f;
     }
@@ -273,6 +282,12 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fMetalBoost = (v >= 0.5f); DBG("[PARAM] MetalBoost=%d", fMetalBoost); break;
     case paramExciteNoise:
         fExciteNoise = (v >= 0.5f); DBG("[PARAM] NoiseBurst=%d", fExciteNoise); break;
+    case paramHouseholderMode:
+        fHouseholderMode = (v >= 0.5f) ? 1 : 0;
+        DBG("[PARAM] HouseholderMode=%d (%s)",
+            fHouseholderMode,
+            fHouseholderMode ? "Diff" : "Fixed");
+        break;
 
     default: break;
     }
@@ -338,12 +353,16 @@ void PluginTinyFdnReverb::activate() {
     fAppliedDelaySet    = fDelaySet;
     fAppliedMatrixType  = (fMatrixMorph < 0.5f) ? 0 : 1;
     fAppliedMetalBoost  = fMetalBoost;
+    fAppliedHouseholderMode = fHouseholderMode;
 
     mMuteSamples      = 0;
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
     mEDTms = mRT60s = mDen100 = mDen300 = 0.f;
     mRinginess = 0.f;
     mWetEnv = 0.f;
+    mHouseholderUActive = mHouseholderUFixed;
+    mHouseholderUDiff = mHouseholderUFixed;
+    mActiveDiffPreset = nullptr;
 
     for (int k=0; k<kN; ++k) {
         std::fill(mBuf[k].begin(), mBuf[k].end(), 0.0f);
@@ -422,6 +441,58 @@ void PluginTinyFdnReverb::updateLineGainsFromRt60(double sr) noexcept {
         double(mGain[2]), double(mGain[3]));
 }
 
+void PluginTinyFdnReverb::normalizeHouseholderU(std::array<float, kN>& u) noexcept
+{
+    double norm2 = 0.0;
+    for (int i = 0; i < kN; ++i)
+        norm2 += double(u[i]) * double(u[i]);
+
+    const double norm = std::sqrt(std::max(norm2, 1e-20));
+    for (int i = 0; i < kN; ++i)
+        u[i] = float(u[i] / norm);
+}
+
+void PluginTinyFdnReverb::updateDiffPresetForContext(double sr) noexcept
+{
+    const int srInt = int(std::lround(sr));
+    const DiffPreset* preset = findDiffPreset(srInt, fDelaySet, fRt60);
+
+    if (preset == nullptr)
+        preset = findDiffPreset(srInt, -1, fRt60);
+
+    if (preset == mActiveDiffPreset)
+        return;
+
+    mActiveDiffPreset = preset;
+    if (mActiveDiffPreset == nullptr) {
+        mHouseholderUDiff = mHouseholderUFixed;
+        DBG("[DIFF] no preset match for sr=%d delaySet=%d rt60=%.3f -> fallback fixed u",
+            srInt, fDelaySet, double(fRt60));
+        return;
+    }
+
+    for (int i = 0; i < kN; ++i)
+        mHouseholderUDiff[i] = mActiveDiffPreset->u_unit[i];
+    normalizeHouseholderU(mHouseholderUDiff);
+
+    DBG("[DIFF] preset=%s sr=%d delay=%s rt60=%.3f u=[%.6f %.6f %.6f %.6f]",
+        mActiveDiffPreset->configId,
+        mActiveDiffPreset->sr,
+        mActiveDiffPreset->delaySetName,
+        double(mActiveDiffPreset->rt60),
+        double(mHouseholderUDiff[0]),
+        double(mHouseholderUDiff[1]),
+        double(mHouseholderUDiff[2]),
+        double(mHouseholderUDiff[3]));
+}
+
+void PluginTinyFdnReverb::updateActiveHouseholderU() noexcept
+{
+    const bool useDiff = (fHouseholderMode != 0) && (mActiveDiffPreset != nullptr);
+    const std::array<float, kN>& src = useDiff ? mHouseholderUDiff : mHouseholderUFixed;
+    mHouseholderUActive = src;
+}
+
 inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN]) const noexcept {
     const float a=in[0], b=in[1], c=in[2], d=in[3];
     out[0] = 0.5f*(+a + b + c + d);
@@ -430,13 +501,18 @@ inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN])
     out[3] = 0.5f*(+a - b - c + d);
 }
 
-inline void PluginTinyFdnReverb::householderMix4(const float in[kN], float out[kN]) const noexcept {
-    const float s = in[0]+in[1]+in[2]+in[3];
-    const float halfS = 0.5f * s;
-    out[0] = in[0] - halfS;
-    out[1] = in[1] - halfS;
-    out[2] = in[2] - halfS;
-    out[3] = in[3] - halfS;
+inline void PluginTinyFdnReverb::householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept
+{
+    float dot = 0.f;
+    for (int i = 0; i < kN; ++i)
+        dot += in[i] * u[i];
+    for (int i = 0; i < kN; ++i)
+        out[i] = in[i] - 2.f * u[i] * dot;
+}
+
+inline void PluginTinyFdnReverb::householderMix4(const float in[kN], float out[kN]) const noexcept
+{
+    householderMix4U(in, mHouseholderUFixed.data(), out);
 }
 
 // Compute ringiness using short-lag autocorr on a window that
@@ -499,6 +575,8 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         fModSmooth    = CParamSmooth(10.0f, sr);
         fDetuneSmooth = CParamSmooth(10.0f, sr);
         selectBaseAndUpdateDelays(sr);
+        updateDiffPresetForContext(sr);
+        updateActiveHouseholderU();
         fLastSR = sr;
         DBG("[RUN] SR change -> %.0f", sr);
     }
@@ -538,6 +616,18 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         resetStateForTopologyChange();
         dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
+
+    // Diff-vs-fixed Householder mode change?
+    if (fHouseholderMode != fAppliedHouseholderMode) {
+        DBG("[RUN] HouseholderMode changed: %s -> %s",
+            fAppliedHouseholderMode ? "Diff" : "Fixed",
+            fHouseholderMode ? "Diff" : "Fixed");
+        fAppliedHouseholderMode = fHouseholderMode;
+    }
+
+    // Keep preset selection aligned to current SR / delay set / RT60.
+    updateDiffPresetForContext(sr);
+    updateActiveHouseholderU();
 
     // Matrix change?
     if (currentMatrixType != fAppliedMatrixType) {
@@ -598,7 +688,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         // Feedback mix (Hada vs House)
         float yH[kN], yHo[kN], y[kN];
         hadamardMix4   (g, yH);
-        householderMix4(g, yHo);
+        householderMix4U(g, mHouseholderUActive.data(), yHo);
         for (int k=0; k<kN; ++k) y[k] = (1.0f - morphTarget)*yH[k] + morphTarget*yHo[k];
 
         // --- STATIC detune AP (small, alternating sign) ---
@@ -795,7 +885,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
 
         DBG("[RUNDBG] rt60=%.3f matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
             double(fRt60),
-            fMatrixType ? "Householder" : "Hadamard",
+            (fMatrixMorph < 0.5f) ? "Hadamard" : (fHouseholderMode ? "DiffHouse" : "FixedHouse"),
             fDelaySet   ? "Spread"      : "Prime",
             fAppliedMetalBoost,
             double(fModDepth),
