@@ -42,6 +42,7 @@ private:
     float fSize    = 1.0f;
     float fDampHz  = 6000.0f;
     float fMorph   = 0.0f;
+    bool  fIsMorphing = false;
     
 
     // NEW controls
