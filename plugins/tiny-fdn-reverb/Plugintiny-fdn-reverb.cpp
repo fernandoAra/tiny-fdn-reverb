@@ -79,24 +79,6 @@ uint32_t PluginTinyFdnReverb::floatToBits(const float value) noexcept
     return bits;
 }
 
-float PluginTinyFdnReverb::bitsToFloat(const uint32_t bits) noexcept
-{
-    float value = 0.f;
-    std::memcpy(&value, &bits, sizeof(float));
-    return value;
-}
-
-uint32_t PluginTinyFdnReverb::getEnvTraceWriteIndex() const noexcept
-{
-    return mEnvTraceWrite.load(std::memory_order_acquire);
-}
-
-float PluginTinyFdnReverb::getEnvTraceValue(const uint32_t sequenceIndex) const noexcept
-{
-    const uint32_t bits = mEnvTraceBits[sequenceIndex & (kEnvTraceSize - 1u)].load(std::memory_order_relaxed);
-    return bitsToFloat(bits);
-}
-
 PluginTinyFdnReverb::PluginTinyFdnReverb()
     : Plugin(paramCount, kPresetCount, 0)
     , fLastSR(0.0)

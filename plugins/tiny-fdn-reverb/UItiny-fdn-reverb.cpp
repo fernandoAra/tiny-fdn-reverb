@@ -58,6 +58,9 @@ UITinyFdnReverb::UITinyFdnReverb()
 
     layout();
     fUiTrace.fill(0.0f);
+#if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
+    fPluginInstance = static_cast<const PluginTinyFdnReverb*>(getPluginInstancePointer());
+#endif
 }
 
 void UITinyFdnReverb::layout() {
@@ -123,11 +126,108 @@ void UITinyFdnReverb::uiIdle()
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fLastUiTick).count();
     if (elapsed >= 33) { // ~30 Hz refresh
-        fUiTrace[fUiTraceWrite & (kUiTraceSize - 1u)] = fWetEnv;
-        ++fUiTraceWrite;
+        pullTraceSamples();
         fLastUiTick = now;
         repaint();
     }
+}
+
+void UITinyFdnReverb::pushTraceSample(float value) noexcept
+{
+    fUiTrace[fUiTraceWrite & (kUiTraceSize - 1u)] = clampf(value, 0.f, 1.f);
+    ++fUiTraceWrite;
+    if (fUiTraceCount < kUiTraceSize)
+        ++fUiTraceCount;
+}
+
+void UITinyFdnReverb::pullTraceSamples() noexcept
+{
+#if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
+    if (fPluginInstance == nullptr)
+        fPluginInstance = static_cast<const PluginTinyFdnReverb*>(getPluginInstancePointer());
+
+    if (fPluginInstance != nullptr) {
+        const uint32_t writeIndex = fPluginInstance->getEnvTraceWriteIndex();
+        if (! fTraceReadInit) {
+            fTraceReadCursor = (writeIndex > kUiTraceSize) ? (writeIndex - kUiTraceSize) : 0u;
+            fTraceReadInit = true;
+        }
+
+        uint32_t unread = writeIndex - fTraceReadCursor;
+        if (unread > kUiTraceSize) {
+            fTraceReadCursor = writeIndex - kUiTraceSize;
+            unread = kUiTraceSize;
+        }
+
+        for (uint32_t i = 0; i < unread; ++i) {
+            pushTraceSample(fPluginInstance->getEnvTraceValue(fTraceReadCursor));
+            ++fTraceReadCursor;
+        }
+        return;
+    }
+#endif
+    pushTraceSample(fWetEnv);
+}
+
+void UITinyFdnReverb::drawEnvelopeTrace(const Rect& r)
+{
+    beginPath();
+    roundedRect(r.x, r.y, r.w, r.h, 6.f);
+    fillColor(Color(245,245,245));
+    fill();
+
+    beginPath();
+    roundedRect(r.x + 8.f, r.y + 8.f, r.w - 16.f, r.h - 16.f, 5.f);
+    fillColor(Color(252,252,252));
+    fill();
+
+    const float x0 = r.x + 12.f;
+    const float y0 = r.y + 12.f;
+    const float w  = r.w - 24.f;
+    const float h  = r.h - 24.f;
+
+    beginPath();
+    moveTo(x0, y0 + h * 0.75f);
+    lineTo(x0 + w, y0 + h * 0.75f);
+    strokeColor(Color(228,228,228));
+    strokeWidth(1.f);
+    stroke();
+
+    beginPath();
+    moveTo(x0, y0 + h * 0.50f);
+    lineTo(x0 + w, y0 + h * 0.50f);
+    strokeColor(Color(220,220,220));
+    strokeWidth(1.f);
+    stroke();
+
+    beginPath();
+    moveTo(x0, y0 + h * 0.25f);
+    lineTo(x0 + w, y0 + h * 0.25f);
+    strokeColor(Color(228,228,228));
+    strokeWidth(1.f);
+    stroke();
+
+    if (fUiTraceCount >= 2u) {
+        const uint32_t count = fUiTraceCount;
+        const uint32_t start = (fUiTraceWrite - count) & (kUiTraceSize - 1u);
+
+        beginPath();
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t idx = (start + i) & (kUiTraceSize - 1u);
+            const float v = std::sqrt(clampf(fUiTrace[idx] * 12.f, 0.f, 1.f));
+            const float x = x0 + (count > 1u ? (w * float(i) / float(count - 1u)) : 0.f);
+            const float y = y0 + h - v * h;
+            if (i == 0u) moveTo(x, y); else lineTo(x, y);
+        }
+        strokeColor(Color(35, 120, 210));
+        strokeWidth(2.f);
+        stroke();
+    }
+
+    fontSize(12.f);
+    fillColor(Color(60,60,60));
+    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+    text(r.x + 10.f, r.y - 8.f, "Wet Tail Envelope (block RMS)", nullptr);
 }
 
 
@@ -150,9 +250,9 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramDensity100ms:  fDen100    = value; break;
     case PluginTinyFdnReverb::paramDensity300ms:  fDen300    = value; break;
     case PluginTinyFdnReverb::paramRinginess:     fRinginess = value; break;
+    case PluginTinyFdnReverb::paramWetEnv:        fWetEnv    = value; break;
     default: break;
     }
-    repaint();
 }
 
 static void drawLabel(UITinyFdnReverb* self, float x, float y, const char* txt,
@@ -445,8 +545,7 @@ void UITinyFdnReverb::onNanoDisplay()
     drawSlider(rMod,  "Mod Depth", fModDepth, 0.00f, 1.00f);
     drawSlider(rDet,  "Detune",    fDetune,   0.00f, 1.00f);
 
-    const float rt_for_plot = (fRT60est > 0.f ? fRT60est : fRt60);
-    drawDecay(rDecay, rt_for_plot);
+    drawEnvelopeTrace(rDecay);
     drawDensityBars(this, rDecay, fDen100, fDen300);
 
     // ringiness meter
@@ -473,7 +572,10 @@ void UITinyFdnReverb::onNanoDisplay()
     // metrics readout
     fontSize(12.f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
     char m1[128], m2[128];
-    std::snprintf(m1, sizeof(m1), "EDT: %.0f ms   RT60(est): %.2f s", fEDTms, fRT60est);
+    if (fEDTms > 0.f && fRT60est > 0.f)
+        std::snprintf(m1, sizeof(m1), "EDT: %.0f ms   RT60(est): %.2f s", fEDTms, fRT60est);
+    else
+        std::snprintf(m1, sizeof(m1), "EDT: N/A   RT60(est): N/A");
     std::snprintf(m2, sizeof(m2), "Echo density: 100 ms = %.2f ev/ms   300 ms = %.2f ev/ms", fDen100, fDen300);
     text(rDecay.x, rDecay.y + rDecay.h + 14.f, m1, nullptr);
     text(rDecay.x, rDecay.y + rDecay.h + 30.f, m2, nullptr);

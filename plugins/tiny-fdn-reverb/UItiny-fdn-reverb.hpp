@@ -71,11 +71,20 @@ private:
     static constexpr uint32_t kUiTraceSize = 256;
     std::array<float, kUiTraceSize> fUiTrace{};
     uint32_t fUiTraceWrite = 0;
+    uint32_t fUiTraceCount = 0;
     std::chrono::steady_clock::time_point fLastUiTick{};
     bool fUiTickInit = false;
+    uint32_t fTraceReadCursor = 0;
+    bool fTraceReadInit = false;
+#if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
+    const PluginTinyFdnReverb* fPluginInstance = nullptr;
+#endif
 
     // layout + drawing helpers
     void layout();
+    void pullTraceSamples() noexcept;
+    void pushTraceSample(float value) noexcept;
+    void drawEnvelopeTrace(const Rect& r);
     void drawSlider(const Rect& r, const char* label, float v, float vmin, float vmax);
     void drawToggle(const Rect& r, const char* label, const char* a, const char* b, int v);
     void drawDecay(const Rect& r, float rt60);

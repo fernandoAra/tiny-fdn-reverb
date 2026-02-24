@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <memory>
 
@@ -49,8 +50,18 @@ public:
     PluginTinyFdnReverb();
     ~PluginTinyFdnReverb() override {}
 
-    uint32_t getEnvTraceWriteIndex() const noexcept;
-    float getEnvTraceValue(uint32_t sequenceIndex) const noexcept;
+    uint32_t getEnvTraceWriteIndex() const noexcept
+    {
+        return mEnvTraceWrite.load(std::memory_order_acquire);
+    }
+
+    float getEnvTraceValue(uint32_t sequenceIndex) const noexcept
+    {
+        const uint32_t bits = mEnvTraceBits[sequenceIndex & (kEnvTraceSize - 1u)].load(std::memory_order_relaxed);
+        float value = 0.f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    }
 
 protected:
     // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
@@ -188,7 +199,6 @@ private:
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
     static uint32_t floatToBits(float value) noexcept;
-    static float bitsToFloat(uint32_t bits) noexcept;
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginTinyFdnReverb)
 };
