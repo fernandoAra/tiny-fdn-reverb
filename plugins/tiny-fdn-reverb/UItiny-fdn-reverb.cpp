@@ -487,87 +487,103 @@ void UITinyFdnReverb::onNanoDisplay()
     text(rAdvancedBtn.x + rAdvancedBtn.w*0.5f, rAdvancedBtn.y + rAdvancedBtn.h*0.5f,
          fShowAdvanced ? "Advanced: ON" : "Advanced: OFF", nullptr);
 
-    // preset strip
-    drawPanel(this, rPreset.x, rPreset.y, rPreset.w, rPreset.h, 6, 235,235,235);
-    const char* labs[4] = { "H+Prime", "H+Spread", "House+Prime", "House+Spread" };
-    const int target[4][2] = {{0,0},{0,1},{1,0},{1,1}};
-    const float segW = rPreset.w / 4.f;
-    for (int s=0; s<4; ++s) {
-        const float sx = rPreset.x + s*segW + 3.f;
-        const bool on = (fMatrixType==target[s][0] && fDelaySet==target[s][1]);
-        beginPath(); roundedRect(sx, rPreset.y+3.f, segW-6.f, rPreset.h-6.f, 4.f);
-        fillColor(on ? Color(120,180,255) : Color(210,210,210)); fill();
+    Rect traceRect = rDecay;
+    Rect ringRect = rRing;
+    if (! fShowAdvanced) {
+        const float top = rPreset.y;
+        traceRect = { 16.f, top, getWidth() - 32.f, getHeight() - top - 82.f };
+        ringRect  = { 16.f, traceRect.y + traceRect.h + 10.f, getWidth() - 32.f, 22.f };
+    }
+
+    if (fShowAdvanced) {
+        // preset strip
+        drawPanel(this, rPreset.x, rPreset.y, rPreset.w, rPreset.h, 6, 235,235,235);
+        const char* labs[4] = { "H+Prime", "H+Spread", "House+Prime", "House+Spread" };
+        const int target[4][2] = {{0,0},{0,1},{1,0},{1,1}};
+        const float segW = rPreset.w / 4.f;
+        for (int s=0; s<4; ++s) {
+            const float sx = rPreset.x + s*segW + 3.f;
+            const bool on = (fMatrixType==target[s][0] && fDelaySet==target[s][1]);
+            beginPath(); roundedRect(sx, rPreset.y+3.f, segW-6.f, rPreset.h-6.f, 4.f);
+            fillColor(on ? Color(120,180,255) : Color(210,210,210)); fill();
+            fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+            text(sx + (segW-6.f)*0.5f, rPreset.y + rPreset.h*0.5f, labs[s], nullptr);
+        }
+
+        // Buttons
+        beginPath(); roundedRect(rBurst.x, rBurst.y, rBurst.w, rBurst.h, 4.f);
+        fillColor(Color(255,150,120)); fill();
+        fontSize(12.f); fillColor(Color(255,255,255));
+        textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+        text(rBurst.x + rBurst.w*0.5f, rBurst.y + rBurst.h*0.5f, "Burst", nullptr);
+
+        beginPath(); roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
+        fillColor(Color(170,130,255)); fill();
+        fontSize(12.f); fillColor(Color(255,255,255));
+        textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+        text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
+
+        // toggles + sliders (left column)
+        drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
+        drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
+
+        // Metallic Boost (single toggle row)
+        drawPanel(this, rMetal.x, rMetal.y, rMetal.w, rMetal.h, 6, 235,235,235);
+        beginPath(); roundedRect(rMetal.x+4, rMetal.y+4, rMetal.w-8, rMetal.h-8, 4.f);
+        fillColor(fMetallic ? Color(240,120,120) : Color(210,210,210)); fill();
         fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
-        text(sx + (segW-6.f)*0.5f, rPreset.y + rPreset.h*0.5f, labs[s], nullptr);
+        text(rMetal.x + (rMetal.w-8)*0.5f, rMetal.y + rMetal.h*0.5f, "Over-spread delays", nullptr);
+
+        drawSlider(rRt60, "RT60",     fRt60,   0.20f, 8.00f);
+        drawSlider(rSize, "Size",     fSize,   0.50f, 2.00f);
+
+        // Damping shows Hz
+        drawPanel(this, rDamp.x, rDamp.y, rDamp.w, rDamp.h, 6, 235,235,235);
+        {
+            const float t = (fDampHz - 1500.f) / (12000.f - 1500.f);
+            const float knobX = rDamp.x + 8 + (rDamp.w - 16) * clampf(t,0.f,1.f);
+            beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, rDamp.w-16, 6, 3); fillColor(Color(210,210,210)); fill();
+            beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, (knobX - (rDamp.x+8)), 6, 3); fillColor(Color(120,180,255)); fill();
+            beginPath(); circle(knobX, rDamp.y + rDamp.h*0.5f, 9.f); fillColor(Color(40,40,40)); fill();
+            char hz[64]; std::snprintf(hz, sizeof(hz), "%.0f Hz", fDampHz);
+            drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", 13.f, 50,50,50);
+            drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, 13.f, 50,50,50);
+        }
+
+        drawSlider(rMix,  "Mix",       fMix,      0.00f, 1.00f);
+        drawSlider(rMod,  "Mod Depth", fModDepth, 0.00f, 1.00f);
+        drawSlider(rDet,  "Detune",    fDetune,   0.00f, 1.00f);
+
+        // matrix tiles (right column)
+        float Hm[4][4] = {
+            {+0.5f,+0.5f,+0.5f,+0.5f},
+            {+0.5f,-0.5f,+0.5f,-0.5f},
+            {+0.5f,+0.5f,-0.5f,-0.5f},
+            {+0.5f,-0.5f,-0.5f,+0.5f}
+        };
+        float Ho[4][4];
+        for(int i=0;i<4;++i) for(int j=0;j<4;++j) Ho[i][j] = (i==j)?0.5f:-0.5f;
+
+        const bool actH  = (fMatrixType==0 && fMorph < 0.5f);
+        const bool actHo = (fMatrixType==1 ||  fMorph >= 0.5f);
+        drawMatrixTile(this, rMatH,  "Matrix: Hadamard (signed sums)", Hm, actH);
+        drawMatrixTile(this, rMatHo, "Matrix: Householder (reflection)", Ho, actHo);
+
+        // Morph slider (right column)
+        drawSlider(rMorph, "Morph (H ⟷ House)", fMorph, 0.0f, 1.0f);
+
+        // captions under toggles
+        fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        char line[64];
+        std::snprintf(line, sizeof(line), "Matrix: %s", fMatrixType ? "Householder" : "Hadamard");
+        text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
+        std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
+        text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
     }
 
-    // Buttons
-    beginPath(); roundedRect(rBurst.x, rBurst.y, rBurst.w, rBurst.h, 4.f);
-    fillColor(Color(255,150,120)); fill();
-    fontSize(12.f); fillColor(Color(255,255,255));
-    textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
-    text(rBurst.x + rBurst.w*0.5f, rBurst.y + rBurst.h*0.5f, "Burst", nullptr);
-
-    beginPath(); roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
-    fillColor(Color(170,130,255)); fill();
-    fontSize(12.f); fillColor(Color(255,255,255));
-    textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
-    text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
-
-    // toggles + sliders (left column)
-    drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
-    drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
-
-    // Metallic Boost (single toggle row)
-    drawPanel(this, rMetal.x, rMetal.y, rMetal.w, rMetal.h, 6, 235,235,235);
-    beginPath(); roundedRect(rMetal.x+4, rMetal.y+4, rMetal.w-8, rMetal.h-8, 4.f);
-    fillColor(fMetallic ? Color(240,120,120) : Color(210,210,210)); fill();
-    fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
-    text(rMetal.x + (rMetal.w-8)*0.5f, rMetal.y + rMetal.h*0.5f, "Over-spread delays", nullptr);
-
-    drawSlider(rRt60, "RT60",     fRt60,   0.20f, 8.00f);
-    drawSlider(rSize, "Size",     fSize,   0.50f, 2.00f);
-
-    // Damping shows Hz
-    drawPanel(this, rDamp.x, rDamp.y, rDamp.w, rDamp.h, 6, 235,235,235);
-    {
-        const float t = (fDampHz - 1500.f) / (12000.f - 1500.f);
-        const float knobX = rDamp.x + 8 + (rDamp.w - 16) * clampf(t,0.f,1.f);
-        beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, rDamp.w-16, 6, 3); fillColor(Color(210,210,210)); fill();
-        beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, (knobX - (rDamp.x+8)), 6, 3); fillColor(Color(120,180,255)); fill();
-        beginPath(); circle(knobX, rDamp.y + rDamp.h*0.5f, 9.f); fillColor(Color(40,40,40)); fill();
-        char hz[64]; std::snprintf(hz, sizeof(hz), "%.0f Hz", fDampHz);
-        drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", 13.f, 50,50,50);
-        drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, 13.f, 50,50,50);
-    }
-
-    drawSlider(rMix,  "Mix",       fMix,      0.00f, 1.00f);
-    drawSlider(rMod,  "Mod Depth", fModDepth, 0.00f, 1.00f);
-    drawSlider(rDet,  "Detune",    fDetune,   0.00f, 1.00f);
-
-    drawEnvelopeTrace(rDecay);
-    drawDensityBars(this, rDecay, fDen100, fDen300);
-
-    // ringiness meter
-    drawRingMeter(rRing, fRinginess);
-
-    // matrix tiles (right column)
-    float Hm[4][4] = {
-        {+0.5f,+0.5f,+0.5f,+0.5f},
-        {+0.5f,-0.5f,+0.5f,-0.5f},
-        {+0.5f,+0.5f,-0.5f,-0.5f},
-        {+0.5f,-0.5f,-0.5f,+0.5f}
-    };
-    float Ho[4][4];
-    for(int i=0;i<4;++i) for(int j=0;j<4;++j) Ho[i][j] = (i==j)?0.5f:-0.5f;
-
-    const bool actH  = (fMatrixType==0 && fMorph < 0.5f);
-    const bool actHo = (fMatrixType==1 ||  fMorph >= 0.5f);
-    drawMatrixTile(this, rMatH,  "Matrix: Hadamard (signed sums)", Hm, actH);
-    drawMatrixTile(this, rMatHo, "Matrix: Householder (reflection)", Ho, actHo);
-
-    // Morph slider (right column)
-    drawSlider(rMorph, "Morph (H ⟷ House)", fMorph, 0.0f, 1.0f);
+    drawEnvelopeTrace(traceRect);
+    drawDensityBars(this, traceRect, fDen100, fDen300);
+    drawRingMeter(ringRect, fRinginess);
 
     // metrics readout
     fontSize(12.f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
@@ -577,19 +593,8 @@ void UITinyFdnReverb::onNanoDisplay()
     else
         std::snprintf(m1, sizeof(m1), "EDT: N/A   RT60(est): N/A");
     std::snprintf(m2, sizeof(m2), "Echo density: 100 ms = %.2f ev/ms   300 ms = %.2f ev/ms", fDen100, fDen300);
-    text(rDecay.x, rDecay.y + rDecay.h + 14.f, m1, nullptr);
-    text(rDecay.x, rDecay.y + rDecay.h + 30.f, m2, nullptr);
-
-    fontSize(11.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
-    text(rDecay.x + rDecay.w + 8.f, rRing.y + rRing.h*0.5f, "Higher bar = more comb/metallicity", nullptr);
-
-    // captions under toggles
-    fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    char line[64];
-    std::snprintf(line, sizeof(line), "Matrix: %s", fMatrixType ? "Householder" : "Hadamard");
-    text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
-    std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
-    text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
+    text(traceRect.x, traceRect.y + traceRect.h + 14.f, m1, nullptr);
+    text(traceRect.x, traceRect.y + traceRect.h + 30.f, m2, nullptr);
 }
 
 
@@ -604,6 +609,16 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
 
     if (ev.press) {
         if (pointIn(rAdvancedBtn, x, y)) {
+            if (fShowAdvanced && fDragging != DRAG_NONE) {
+                if (fDragging == DRAG_RT60)   endEdit(PluginTinyFdnReverb::paramRt60);
+                if (fDragging == DRAG_SIZE)   endEdit(PluginTinyFdnReverb::paramSize);
+                if (fDragging == DRAG_DAMP)   endEdit(PluginTinyFdnReverb::paramDampHz);
+                if (fDragging == DRAG_MIX)    endEdit(PluginTinyFdnReverb::paramMix);
+                if (fDragging == DRAG_MORPH)  endEdit(PluginTinyFdnReverb::paramMatrixMorph);
+                if (fDragging == DRAG_MOD)    endEdit(PluginTinyFdnReverb::paramModDepth);
+                if (fDragging == DRAG_DETUNE) endEdit(PluginTinyFdnReverb::paramDetune);
+                fDragging = DRAG_NONE;
+            }
             fShowAdvanced = !fShowAdvanced;
             repaint();
             return true;
@@ -618,6 +633,9 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             repaint();
             return true;
         }
+
+        if (!fShowAdvanced)
+            return false;
 
         // sliders
         if (pointIn(rRt60, x, y)) { fDragging = DRAG_RT60; beginEdit(PluginTinyFdnReverb::paramRt60); return true; }
@@ -702,6 +720,11 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             return true;
         }
     } else {
+        if (!fShowAdvanced) {
+            fDragging = DRAG_NONE;
+            return false;
+        }
+
         // release
         if (fDragging == DRAG_RT60)   { endEdit(PluginTinyFdnReverb::paramRt60);        fDragging = DRAG_NONE; return true; }
         if (fDragging == DRAG_SIZE)   { endEdit(PluginTinyFdnReverb::paramSize);        fDragging = DRAG_NONE; return true; }
@@ -716,7 +739,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
 
 
 bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
-    if (fDragging == DRAG_NONE) return false;
+    if (!fShowAdvanced || fDragging == DRAG_NONE) return false;
     const float x = ev.pos.getX();
 
     auto sliderT = [&](const Rect& r) {
