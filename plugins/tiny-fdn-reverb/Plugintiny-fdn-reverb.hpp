@@ -93,6 +93,18 @@ public:
         return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
     }
 
+    float getMatrixMorph() const noexcept
+    {
+        return fMatrixMorph;
+    }
+
+    void setMatrixMorphFromUI(float v) noexcept
+    {
+        const float vm = (v < 0.f) ? 0.f : (v > 1.f ? 1.f : v);
+        fMatrixMorph = vm;
+        fMatrixType = (vm < 0.5f) ? 0 : 1;
+    }
+
 protected:
     // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
     // metadata
@@ -110,6 +122,13 @@ protected:
     // programs
     void initProgramName(uint32_t index, String& programName) override;
     void loadProgram(uint32_t index) override;
+#if DISTRHO_PLUGIN_WANT_STATE
+    void initState(uint32_t index, State& state) override;
+    void setState(const char* key, const char* value) override;
+#endif
+#if DISTRHO_PLUGIN_WANT_FULL_STATE
+    String getState(const char* key) const override;
+#endif
     // === BOILERPLATE END ===
 
     // lifecycle / audio

@@ -78,12 +78,13 @@ private:
     uint32_t fTraceReadCursor = 0;
     bool fTraceReadInit = false;
 #if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
-    const PluginTinyFdnReverb* fPluginInstance = nullptr;
+    PluginTinyFdnReverb* fPluginInstance = nullptr;
 #endif
 
     // layout + drawing helpers
     void layout();
     void pullTraceSamples() noexcept;
+    void applyMatrixMorphFromUI(float value) noexcept;
     void pushTraceSample(float value) noexcept;
     void drawEnvelopeTrace(const Rect& r);
     void drawSlider(const Rect& r, const char* label, float v, float vmin, float vmax);

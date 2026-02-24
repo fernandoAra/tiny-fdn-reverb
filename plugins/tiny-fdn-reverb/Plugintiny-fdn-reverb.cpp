@@ -5,6 +5,7 @@
 #include <array>
 #include <numeric>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -58,6 +59,7 @@ static const Preset kPresets[] = {
 };
 
 static const uint32_t kPresetCount = sizeof(kPresets)/sizeof(kPresets[0]);
+static const uint32_t kStateCount = 1;
 
 static inline void dump_state_lengths(const char* tag,
                                       int matrixType, int delaySet,
@@ -80,7 +82,7 @@ uint32_t PluginTinyFdnReverb::floatToBits(const float value) noexcept
 }
 
 PluginTinyFdnReverb::PluginTinyFdnReverb()
-    : Plugin(paramCount, kPresetCount, 0)
+    : Plugin(paramCount, kPresetCount, kStateCount)
     , fLastSR(0.0)
     , fRt60(2.80f)
     , fMix(1.00f)
@@ -106,10 +108,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mWetEnvBits.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.19"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.20"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,19,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,20,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -143,7 +145,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.ranges = { 1500.0f, 12000.0f, fDampHz };
         break;
     case paramMatrixMorph:
-        p.hints  = kParameterIsAutomable;
+        p.hints  = kParameterIsOutput;
         p.name   = "Matrix Morph"; p.symbol = "mmorph";
         p.ranges = { 0.0f, 1.0f, fMatrixMorph };
         break;
@@ -257,10 +259,7 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramDampHz:
         fDampHz = v; /*no log*/ break;
     case paramMatrixMorph: {
-        const float vm = std::max(0.0f, std::min(1.0f, v));
-        fMatrixMorph = vm;
-        fMatrixType = (vm < 0.5f) ? 0 : 1;
-        DBG("[DSP] setParameterValue(MatrixMorph)=%.3f", double(v));
+        DBG("[DSP] host MatrixMorph=%.3f ignored (internal state)", double(v));
         break;
     }
     case paramPing:
@@ -297,6 +296,42 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
         setParameterValue(paramExciteNoise,  kPresets[i].params[paramExciteNoise]);
     }
 }
+
+#if DISTRHO_PLUGIN_WANT_STATE
+void PluginTinyFdnReverb::initState(uint32_t i, State& state)
+{
+    if (i == 0u) {
+        state.hints = kStateIsHostWritable;
+        state.key = "matrix_morph";
+        state.defaultValue = "0.000000";
+        state.label = "Matrix Morph";
+    }
+}
+
+void PluginTinyFdnReverb::setState(const char* key, const char* value)
+{
+    if (key == nullptr)
+        return;
+
+    if (std::strcmp(key, "matrix_morph") == 0) {
+        const float vm = (value != nullptr) ? std::strtof(value, nullptr) : 0.0f;
+        setMatrixMorphFromUI(vm);
+    }
+}
+#endif
+
+#if DISTRHO_PLUGIN_WANT_FULL_STATE
+String PluginTinyFdnReverb::getState(const char* key) const
+{
+    if (key != nullptr && std::strcmp(key, "matrix_morph") == 0) {
+        char tmp[32];
+        std::snprintf(tmp, sizeof(tmp), "%.6f", double(fMatrixMorph));
+        return String(tmp);
+    }
+
+    return String();
+}
+#endif
 
 void PluginTinyFdnReverb::activate() {
     fAppliedSize        = fSize;

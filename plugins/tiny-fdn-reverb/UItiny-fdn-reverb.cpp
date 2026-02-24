@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.19";
+static constexpr const char* kPluginVersionText = "v1.20";
 static constexpr float kFontTitle = 18.0f;
 static constexpr float kFontLabel = 14.0f;
 static constexpr float kFontValue = 14.0f;
@@ -65,7 +65,7 @@ UITinyFdnReverb::UITinyFdnReverb()
     layout();
     fUiTrace.fill(0.0f);
 #if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
-    fPluginInstance = static_cast<const PluginTinyFdnReverb*>(getPluginInstancePointer());
+    fPluginInstance = static_cast<PluginTinyFdnReverb*>(getPluginInstancePointer());
 #endif
 }
 
@@ -138,6 +138,21 @@ void UITinyFdnReverb::uiIdle()
     }
 }
 
+void UITinyFdnReverb::applyMatrixMorphFromUI(float value) noexcept
+{
+    const float v = clampf(value, 0.f, 1.f);
+    fMorph = v;
+    fMatrixType = (v < 0.5f) ? 0 : 1;
+    fIsMorphing = (v > 0.01f && v < 0.99f);
+
+#if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
+    if (fPluginInstance == nullptr)
+        fPluginInstance = static_cast<PluginTinyFdnReverb*>(getPluginInstancePointer());
+    if (fPluginInstance != nullptr)
+        fPluginInstance->setMatrixMorphFromUI(v);
+#endif
+}
+
 void UITinyFdnReverb::pushTraceSample(float value) noexcept
 {
     fUiTrace[fUiTraceWrite & (kUiTraceSize - 1u)] = clampf(value, 0.f, 1.f);
@@ -150,9 +165,14 @@ void UITinyFdnReverb::pullTraceSamples() noexcept
 {
 #if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
     if (fPluginInstance == nullptr)
-        fPluginInstance = static_cast<const PluginTinyFdnReverb*>(getPluginInstancePointer());
+        fPluginInstance = static_cast<PluginTinyFdnReverb*>(getPluginInstancePointer());
 
     if (fPluginInstance != nullptr) {
+        const float morph = clampf(fPluginInstance->getMatrixMorph(), 0.f, 1.f);
+        fMorph = morph;
+        fMatrixType = (morph < 0.5f) ? 0 : 1;
+        fIsMorphing = (morph > 0.01f && morph < 0.99f);
+
         const uint32_t writeIndex = fPluginInstance->getEnvTraceWriteIndex();
         if (! fTraceReadInit) {
             fTraceReadCursor = (writeIndex > kUiTraceSize) ? (writeIndex - kUiTraceSize) : 0u;
@@ -491,7 +511,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 15, "Tiny FDN Reverb v1.19 — Dal Santo core", nullptr);
+    text(12, 15, "Tiny FDN Reverb v1.20 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     const char* matrixDisplay = fIsMorphing ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder");
@@ -661,7 +681,6 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
                 if (fDragging == DRAG_SIZE)   endEdit(PluginTinyFdnReverb::paramSize);
                 if (fDragging == DRAG_DAMP)   endEdit(PluginTinyFdnReverb::paramDampHz);
                 if (fDragging == DRAG_MIX)    endEdit(PluginTinyFdnReverb::paramMix);
-                if (fDragging == DRAG_MORPH)  endEdit(PluginTinyFdnReverb::paramMatrixMorph);
                 if (fDragging == DRAG_MOD)    endEdit(PluginTinyFdnReverb::paramModDepth);
                 if (fDragging == DRAG_DETUNE) endEdit(PluginTinyFdnReverb::paramDetune);
                 fDragging = DRAG_NONE;
@@ -674,13 +693,8 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         if (pointIn(rLayerMatrix, x, y)) {
             const float half = rLayerMatrix.w*0.5f;
             const float snap = (x < rLayerMatrix.x+half) ? 0.0f : 1.0f;
-            fMorph = snap;
-            fMatrixType = int(std::lround(snap));
-            fIsMorphing = false;
+            applyMatrixMorphFromUI(snap);
             DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
-            beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
-            setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
-            endEdit(PluginTinyFdnReverb::paramMatrixMorph);
             repaint();
             return true;
         }
@@ -693,7 +707,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         if (pointIn(rSize, x, y))  { fDragging = DRAG_SIZE; beginEdit(PluginTinyFdnReverb::paramSize); return true; }
         if (pointIn(rDamp, x, y))  { fDragging = DRAG_DAMP; beginEdit(PluginTinyFdnReverb::paramDampHz); return true; }
         if (pointIn(rMix,  x, y))  { fDragging = DRAG_MIX;  beginEdit(PluginTinyFdnReverb::paramMix); return true; }
-        if (pointIn(rMorph,x, y))  { fDragging = DRAG_MORPH;beginEdit(PluginTinyFdnReverb::paramMatrixMorph); return true; }
+        if (pointIn(rMorph,x, y))  { fDragging = DRAG_MORPH; return true; }
         if (pointIn(rMod,  x, y))  { fDragging = DRAG_MOD;  beginEdit(PluginTinyFdnReverb::paramModDepth); return true; }
         if (pointIn(rDet,  x, y))  { fDragging = DRAG_DETUNE;beginEdit(PluginTinyFdnReverb::paramDetune); return true; }
 
@@ -715,13 +729,8 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         if (pointIn(rMatrix, x, y)) {
             const float half = rMatrix.w*0.5f;
             const float snap = (x < rMatrix.x+half) ? 0.0f : 1.0f;
-            fMorph = snap;
-            fMatrixType = int(std::lround(snap));
-            fIsMorphing = false;
+            applyMatrixMorphFromUI(snap);
             DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
-            beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
-            setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
-            endEdit(PluginTinyFdnReverb::paramMatrixMorph);
 
             repaint();
             return true;
@@ -753,13 +762,8 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
                 beginEdit(PluginTinyFdnReverb::paramDelaySet);
                 setParam(PluginTinyFdnReverb::paramDelaySet, float(d));
                 endEdit(PluginTinyFdnReverb::paramDelaySet);
-                fMorph = float(m);
-                fMatrixType = m;
-                fIsMorphing = false;
+                applyMatrixMorphFromUI(float(m));
                 DBG("[UI] set morph=%d", m);
-                beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
-                setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
-                endEdit(PluginTinyFdnReverb::paramMatrixMorph);
                 repaint();
             }
             return true;
@@ -775,7 +779,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         if (fDragging == DRAG_SIZE)   { endEdit(PluginTinyFdnReverb::paramSize);        fDragging = DRAG_NONE; return true; }
         if (fDragging == DRAG_DAMP)   { endEdit(PluginTinyFdnReverb::paramDampHz);      fDragging = DRAG_NONE; return true; }
         if (fDragging == DRAG_MIX)    { endEdit(PluginTinyFdnReverb::paramMix);         fDragging = DRAG_NONE; return true; }
-        if (fDragging == DRAG_MORPH)  { endEdit(PluginTinyFdnReverb::paramMatrixMorph); fDragging = DRAG_NONE; return true; }
+        if (fDragging == DRAG_MORPH)  { fDragging = DRAG_NONE; return true; }
         if (fDragging == DRAG_MOD)    { endEdit(PluginTinyFdnReverb::paramModDepth);    fDragging = DRAG_NONE; return true; }
         if (fDragging == DRAG_DETUNE) { endEdit(PluginTinyFdnReverb::paramDetune);      fDragging = DRAG_NONE; return true; }
     }
@@ -810,10 +814,7 @@ bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
     } else if (fDragging == DRAG_MORPH) {
         const float t = sliderT(rMorph);
         const float v = t;
-        fMorph = v;
-        fMatrixType = (v < 0.5f) ? 0 : 1;
-        fIsMorphing = (v > 0.01f && v < 0.99f);
-        setParam(PluginTinyFdnReverb::paramMatrixMorph, v);
+        applyMatrixMorphFromUI(v);
     } else if (fDragging == DRAG_MOD) {
         const float t = sliderT(rMod);
         const float v = t;
