@@ -104,12 +104,11 @@ private:
     float  fLastSR      = 48000.f;
     float  fRt60        = 1.5f;
     float  fMix         = 0.25f;
-    int    fMatrixType  = 0;
+    int    fMatrixType  = 0; // derived indicator from fMatrixMorph
     int    fDelaySet    = 0;
     float  fSize        = 1.0f;
     float  fDampHz      = 6000.f;
     float  fMatrixMorph = 0.0f;
-    bool   fMatrixDiscreteLock = true; // true: discrete matrixType owns morph endpoint
     int    fPing        = 0;
 
     // NEW interactive controls

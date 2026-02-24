@@ -100,10 +100,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.16"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.17"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,16,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,17,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -119,7 +119,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         break;
     case paramMatrixType:
         p.name = "MatrixType"; p.symbol = "matrix";
-        p.hints |= kParameterIsInteger;
+        p.hints = kParameterIsOutput | kParameterIsInteger;
         p.ranges = { 0.0f, 1.0f, float(fMatrixType) };
         break;
     case paramDelaySet:
@@ -203,7 +203,7 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     switch (i) {
     case paramRt60:         return fRt60;
     case paramMix:          return fMix;
-    case paramMatrixType:   return float(fMatrixType);
+    case paramMatrixType:   return (fMatrixMorph < 0.5f) ? 0.0f : 1.0f;
     case paramDelaySet:     return float(fDelaySet);
     case paramSize:         return fSize;
     case paramDampHz:       return fDampHz;
@@ -233,14 +233,8 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramMix:
         fMix = v;  /*no log*/ break;
     case paramMatrixType: {
-        const int old = fMatrixType;
-        fMatrixType = int(std::round(v));
-        fMatrixMorph = float(fMatrixType);
-        fMatrixDiscreteLock = true;
-        DBG("[PARAM] MatrixType=%d (%s) requested", fMatrixType, fMatrixType? "Householder":"Hadamard");
-        if (fMatrixType != old) {
-            // handled in run(): will reset safely and log
-        }
+        (void)v;
+        DBG("[DSP] type set attempt ignored");
         break;
     }
     case paramDelaySet: {
@@ -258,20 +252,9 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fDampHz = v; /*no log*/ break;
     case paramMatrixMorph: {
         const float vm = std::max(0.0f, std::min(1.0f, v));
-        if (vm > 0.01f && vm < 0.99f) {
-            // Any in-between value means the advanced morph slider is active.
-            fMatrixDiscreteLock = false;
-            fMatrixMorph = vm;
-            fMatrixType = int(std::lround(vm));
-        } else if (fMatrixDiscreteLock) {
-            // While locked, keep the discrete endpoint selected by matrixType.
-            fMatrixMorph = float(fMatrixType);
-        } else {
-            // Endpoint reached from advanced morph; snap and relock.
-            fMatrixMorph = (vm >= 0.5f) ? 1.0f : 0.0f;
-            fMatrixType = int(fMatrixMorph);
-            fMatrixDiscreteLock = true;
-        }
+        fMatrixMorph = vm;
+        fMatrixType = (vm < 0.5f) ? 0 : 1;
+        DBG("[DSP] morph=%.3f", double(fMatrixMorph));
         break;
     }
     case paramPing:
@@ -298,7 +281,6 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
     if (i < kPresetCount) {
         setParameterValue(paramRt60,         kPresets[i].params[paramRt60]);
         setParameterValue(paramMix,          kPresets[i].params[paramMix]);
-        setParameterValue(paramMatrixType,   kPresets[i].params[paramMatrixType]);
         setParameterValue(paramDelaySet,     kPresets[i].params[paramDelaySet]);
         setParameterValue(paramSize,         kPresets[i].params[paramSize]);
         setParameterValue(paramDampHz,       kPresets[i].params[paramDampHz]);
@@ -313,9 +295,8 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
 void PluginTinyFdnReverb::activate() {
     fAppliedSize        = fSize;
     fAppliedDelaySet    = fDelaySet;
-    fAppliedMatrixType  = fMatrixType;
+    fAppliedMatrixType  = (fMatrixMorph < 0.5f) ? 0 : 1;
     fAppliedMetalBoost  = fMetalBoost;
-    fMatrixDiscreteLock = true;
 
     mMuteSamples      = 0;
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
@@ -476,11 +457,14 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
     }
 
     // Apply size change (integer lengths)
+    const int currentMatrixType = (fMatrixMorph < 0.5f) ? 0 : 1;
+    fMatrixType = currentMatrixType;
+
     if (std::fabs(fSize - fAppliedSize) > 1e-4f) {
         fAppliedSize = fSize;
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     // Metallic Boost toggled?
@@ -495,7 +479,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         }
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     // Delay set change?
@@ -505,17 +489,17 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         fAppliedDelaySet = fDelaySet;
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     // Matrix change?
-    if (fMatrixType != fAppliedMatrixType) {
+    if (currentMatrixType != fAppliedMatrixType) {
         DBG("[RUN] MatrixType changed: %s -> %s",
             fAppliedMatrixType? "Householder":"Hadamard",
-            fMatrixType? "Householder":"Hadamard");
-        fAppliedMatrixType = fMatrixType;
+            currentMatrixType? "Householder":"Hadamard");
+        fAppliedMatrixType = currentMatrixType;
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     updateLineGainsFromRt60(sr);

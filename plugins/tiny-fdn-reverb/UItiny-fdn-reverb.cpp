@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.16";
+static constexpr const char* kPluginVersionText = "v1.17";
 
 UITinyFdnReverb::UITinyFdnReverb()
 : UI(1040, 520) // +40px for extra row
@@ -242,9 +242,10 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
     case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
     case PluginTinyFdnReverb::paramMatrixMorph:
-        fMorph  = value;
+        fMorph  = clampf(value, 0.f, 1.f);
         if (fMorph <= 0.01f) fMatrixType = 0;
         else if (fMorph >= 0.99f) fMatrixType = 1;
+        else fMatrixType = -1;
         break;
 
     case PluginTinyFdnReverb::paramModDepth:  fModDepth = value; break;
@@ -478,10 +479,13 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v1.16 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v1.17 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     const int layerMode = (fMorph >= 0.5f ? 1 : 0);
+    const char* matrixDisplay = (fMorph <= 0.01f)
+        ? "Hadamard"
+        : ((fMorph >= 0.99f) ? "Householder" : "Morphing");
     drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", layerMode);
     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
     beginPath();
@@ -512,13 +516,13 @@ void UITinyFdnReverb::onNanoDisplay()
     {
         char diag[128];
         std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), param=%s",
-                      (layerMode == 0 ? "Hadamard" : "Householder"),
+                      matrixDisplay,
                       fMorph,
-                      (fMatrixType == 0 ? "Hadamard" : "Householder"));
-        fontSize(11.f);
+                      (fMatrixType < 0 ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder")));
+        fontSize(13.f);
         fillColor(Color(65,65,65));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        text(16.f, 34.f, diag, nullptr);
+        text(16.f, 36.f, diag, nullptr);
     }
 
     Rect traceRect = rDecay;
@@ -558,7 +562,7 @@ void UITinyFdnReverb::onNanoDisplay()
         text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
 
         // toggles + sliders (left column)
-        drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
+        drawToggle(rMatrix, "Matrix", "Hadamard", "House", layerMode);
         drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
 
         // Metallic Boost (single toggle row)
@@ -598,8 +602,8 @@ void UITinyFdnReverb::onNanoDisplay()
         float Ho[4][4];
         for(int i=0;i<4;++i) for(int j=0;j<4;++j) Ho[i][j] = (i==j)?0.5f:-0.5f;
 
-        const bool actH  = (fMatrixType==0 && fMorph < 0.5f);
-        const bool actHo = (fMatrixType==1 ||  fMorph >= 0.5f);
+        const bool actH  = (fMorph <= 0.5f);
+        const bool actHo = (fMorph >= 0.5f);
         drawMatrixTile(this, rMatH,  "Matrix: Hadamard (signed sums)", Hm, actH);
         drawMatrixTile(this, rMatHo, "Matrix: Householder (reflection)", Ho, actHo);
 
@@ -609,7 +613,7 @@ void UITinyFdnReverb::onNanoDisplay()
         // captions under toggles
         fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         char line[64];
-        std::snprintf(line, sizeof(line), "Matrix: %s", fMatrixType ? "Householder" : "Hadamard");
+        std::snprintf(line, sizeof(line), "Matrix: %s", matrixDisplay);
         text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
         std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
         text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
@@ -660,14 +664,10 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
 
         if (pointIn(rLayerMatrix, x, y)) {
             const float half = rLayerMatrix.w*0.5f;
-            fMatrixType = (x < rLayerMatrix.x+half) ? 0 : 1;
-            beginEdit(PluginTinyFdnReverb::paramMatrixType);
-            setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
-            endEdit(PluginTinyFdnReverb::paramMatrixType);
-
-            // Keep Layer 1 mode in sync with the actual DSP blend selector.
-            const float snap = fMatrixType ? 1.0f : 0.0f;
+            const float snap = (x < rLayerMatrix.x+half) ? 0.0f : 1.0f;
             fMorph = snap;
+            fMatrixType = int(std::lround(snap));
+            DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
             endEdit(PluginTinyFdnReverb::paramMatrixMorph);
@@ -704,16 +704,10 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
         // toggles
         if (pointIn(rMatrix, x, y)) {
             const float half = rMatrix.w*0.5f;
-            fMatrixType = (x < rMatrix.x+half) ? 0 : 1;
-
-            beginEdit(PluginTinyFdnReverb::paramMatrixType);
-            setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
-            endEdit(PluginTinyFdnReverb::paramMatrixType);
-            DBG("[UI] Matrix toggle → %d", fMatrixType);
-
-            // Snap Morph to match (0=Hadamard, 1=Householder)
-            const float snap = fMatrixType ? 1.0f : 0.0f;
+            const float snap = (x < rMatrix.x+half) ? 0.0f : 1.0f;
             fMorph = snap;
+            fMatrixType = int(std::lround(snap));
+            DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
             endEdit(PluginTinyFdnReverb::paramMatrixMorph);
@@ -745,14 +739,12 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             if (s >= 0 && s < 4) {
                 const int m = (s < 2) ? 0 : 1;
                 const int d = (s % 2 == 0) ? 0 : 1;
-                beginEdit(PluginTinyFdnReverb::paramMatrixType);
-                setParam(PluginTinyFdnReverb::paramMatrixType, float(m));
-                endEdit(PluginTinyFdnReverb::paramMatrixType);
                 beginEdit(PluginTinyFdnReverb::paramDelaySet);
                 setParam(PluginTinyFdnReverb::paramDelaySet, float(d));
                 endEdit(PluginTinyFdnReverb::paramDelaySet);
-                DBG("[UI] Preset click → Matrix=%d Delay=%d", m, d);
-                // Snap Morph to match (0=Hadamard, 1=Householder)
+                fMorph = float(m);
+                fMatrixType = m;
+                DBG("[UI] set morph=%d", m);
                 beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
                 setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
                 endEdit(PluginTinyFdnReverb::paramMatrixMorph);
