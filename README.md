@@ -71,6 +71,37 @@ a dedicated makefile variable.
 *Note: The given default values for all of the above listed environment
 variables differ depending on the target OS.*
 
+## DiffFDN Offline Presets
+
+Offline optimization uses PyTorch in `eval/difffdn/` and exports JSON presets.
+The plugin itself stays torch-free and consumes generated C++ preset data from
+`plugins/tiny-fdn-reverb/DiffFdnPresets.hpp`.
+
+Reproducible sequence:
+
+```con
+# 1) Generate learned presets (example: Prime + Spread @ 48 kHz)
+python3 eval/difffdn/optimize_householder.py \
+  --config-id householder_prime_rt60_2p8_ad005 \
+  --matrix-type householder \
+  --sr 48000 --delay-samples "1499,2377,3217,4421" \
+  --rt60 2.8 --alpha-density 0.05 --steps 800 --seed 1234 \
+  --out-dir eval/out/presets
+
+python3 eval/difffdn/optimize_householder.py \
+  --config-id householder_spread_rt60_2p8_ad005 \
+  --matrix-type householder \
+  --sr 48000 --delay-samples "1200,1800,2400,3000" \
+  --rt60 2.8 --alpha-density 0.05 --steps 800 --seed 1234 \
+  --out-dir eval/out/presets
+
+# 2) Export embedded C++ preset header consumed by the plugin
+python3 eval/difffdn/export_cpp_header.py \
+  --preset eval/out/presets/householder_prime_rt60_2p8_ad005.json \
+  --preset eval/out/presets/householder_spread_rt60_2p8_ad005.json \
+  --out-header plugins/tiny-fdn-reverb/DiffFdnPresets.hpp
+```
+
 
 ## Prerequisites
 

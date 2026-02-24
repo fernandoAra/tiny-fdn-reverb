@@ -7,6 +7,7 @@
 
 #include "DistrhoPlugin.hpp"
 #include "CParamSmooth.hpp"
+#include "DiffFdnPresets.hpp"
 #include <array>
 #include <atomic>
 #include <cstdint>
