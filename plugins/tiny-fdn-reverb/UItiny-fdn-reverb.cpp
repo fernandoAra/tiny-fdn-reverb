@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.14";
+static constexpr const char* kPluginVersionText = "v1.15";
 
 UITinyFdnReverb::UITinyFdnReverb()
 : UI(1040, 520) // +40px for extra row
@@ -241,7 +241,11 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramDelaySet:   fDelaySet   = int(std::lround(value)); break;
     case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
     case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
-    case PluginTinyFdnReverb::paramMatrixMorph:  fMorph  = value; break;
+    case PluginTinyFdnReverb::paramMatrixMorph:
+        fMorph  = value;
+        if (fMorph <= 0.01f) fMatrixType = 0;
+        else if (fMorph >= 0.99f) fMatrixType = 1;
+        break;
 
     case PluginTinyFdnReverb::paramModDepth:  fModDepth = value; break;
     case PluginTinyFdnReverb::paramDetune:    fDetune   = value; break;
@@ -474,10 +478,11 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v1.14 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v1.15 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
-    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);
+    const int layerMode = (fMorph >= 0.5f ? 1 : 0);
+    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", layerMode);
     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
     beginPath();
     roundedRect(rAdvancedBtn.x+2.f, rAdvancedBtn.y+2.f, rAdvancedBtn.w-4.f, rAdvancedBtn.h-4.f, 4.f);
@@ -502,6 +507,19 @@ void UITinyFdnReverb::onNanoDisplay()
     fillColor(Color(30,30,30));
     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
     text(vbX + vbW*0.5f, vbY + vbH*0.5f, kPluginVersionText, nullptr);
+
+    // Matrix diagnostics: helps distinguish visual toggle issues from DSP mode changes.
+    {
+        char diag[128];
+        std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), param=%s",
+                      (layerMode == 0 ? "Hadamard" : "Householder"),
+                      fMorph,
+                      (fMatrixType == 0 ? "Hadamard" : "Householder"));
+        fontSize(11.f);
+        fillColor(Color(65,65,65));
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        text(16.f, 34.f, diag, nullptr);
+    }
 
     Rect traceRect = rDecay;
     Rect ringRect = rRing;
