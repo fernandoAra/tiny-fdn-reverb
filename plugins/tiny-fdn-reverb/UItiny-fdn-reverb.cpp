@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.15";
+static constexpr const char* kPluginVersionText = "v1.16";
 
 UITinyFdnReverb::UITinyFdnReverb()
 : UI(1040, 520) // +40px for extra row
@@ -478,7 +478,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v1.15 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v1.16 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     const int layerMode = (fMorph >= 0.5f ? 1 : 0);

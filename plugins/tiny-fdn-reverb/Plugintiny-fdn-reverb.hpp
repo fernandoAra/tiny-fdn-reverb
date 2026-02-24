@@ -109,6 +109,7 @@ private:
     float  fSize        = 1.0f;
     float  fDampHz      = 6000.f;
     float  fMatrixMorph = 0.0f;
+    bool   fMatrixDiscreteLock = true; // true: discrete matrixType owns morph endpoint
     int    fPing        = 0;
 
     // NEW interactive controls

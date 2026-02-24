@@ -100,10 +100,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.15"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.16"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,15,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,16,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -235,6 +235,8 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramMatrixType: {
         const int old = fMatrixType;
         fMatrixType = int(std::round(v));
+        fMatrixMorph = float(fMatrixType);
+        fMatrixDiscreteLock = true;
         DBG("[PARAM] MatrixType=%d (%s) requested", fMatrixType, fMatrixType? "Householder":"Hadamard");
         if (fMatrixType != old) {
             // handled in run(): will reset safely and log
@@ -254,8 +256,24 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fSize = v; DBG("[PARAM] Size=%.3f requested", double(fSize)); break;
     case paramDampHz:
         fDampHz = v; /*no log*/ break;
-    case paramMatrixMorph:
-        fMatrixMorph = v; /*no log*/ break;
+    case paramMatrixMorph: {
+        const float vm = std::max(0.0f, std::min(1.0f, v));
+        if (vm > 0.01f && vm < 0.99f) {
+            // Any in-between value means the advanced morph slider is active.
+            fMatrixDiscreteLock = false;
+            fMatrixMorph = vm;
+            fMatrixType = int(std::lround(vm));
+        } else if (fMatrixDiscreteLock) {
+            // While locked, keep the discrete endpoint selected by matrixType.
+            fMatrixMorph = float(fMatrixType);
+        } else {
+            // Endpoint reached from advanced morph; snap and relock.
+            fMatrixMorph = (vm >= 0.5f) ? 1.0f : 0.0f;
+            fMatrixType = int(fMatrixMorph);
+            fMatrixDiscreteLock = true;
+        }
+        break;
+    }
     case paramPing:
         fPing = (v >= 0.5f); /*no log*/ break;
 
@@ -297,6 +315,7 @@ void PluginTinyFdnReverb::activate() {
     fAppliedDelaySet    = fDelaySet;
     fAppliedMatrixType  = fMatrixType;
     fAppliedMetalBoost  = fMetalBoost;
+    fMatrixDiscreteLock = true;
 
     mMuteSamples      = 0;
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
