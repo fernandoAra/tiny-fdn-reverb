@@ -63,6 +63,36 @@ public:
         return value;
     }
 
+    float getMeterEDTms() const noexcept
+    {
+        return bitsToFloat(mEDTmsBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterRT60s() const noexcept
+    {
+        return bitsToFloat(mRT60sBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterDensity100() const noexcept
+    {
+        return bitsToFloat(mDen100Bits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterDensity300() const noexcept
+    {
+        return bitsToFloat(mDen300Bits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterRinginess() const noexcept
+    {
+        return bitsToFloat(mRinginessBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterWetEnv() const noexcept
+    {
+        return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
+    }
+
 protected:
     // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
     // metadata
@@ -161,6 +191,12 @@ private:
     // Audio-thread writer, UI-thread reader (direct access path).
     std::array<std::atomic<uint32_t>, kEnvTraceSize> mEnvTraceBits{};
     std::atomic<uint32_t> mEnvTraceWrite{0};
+    std::atomic<uint32_t> mEDTmsBits{0u};
+    std::atomic<uint32_t> mRT60sBits{0u};
+    std::atomic<uint32_t> mDen100Bits{0u};
+    std::atomic<uint32_t> mDen300Bits{0u};
+    std::atomic<uint32_t> mRinginessBits{0u};
+    std::atomic<uint32_t> mWetEnvBits{0u};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};
@@ -199,6 +235,12 @@ private:
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
     static uint32_t floatToBits(float value) noexcept;
+    static float bitsToFloat(uint32_t bits) noexcept
+    {
+        float value = 0.f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    }
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginTinyFdnReverb)
 };

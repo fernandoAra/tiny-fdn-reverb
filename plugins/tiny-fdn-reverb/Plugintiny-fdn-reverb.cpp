@@ -98,12 +98,18 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     for (auto& slot : mEnvTraceBits)
         slot.store(0u, std::memory_order_relaxed);
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+    mEDTmsBits.store(0u, std::memory_order_relaxed);
+    mRT60sBits.store(0u, std::memory_order_relaxed);
+    mDen100Bits.store(0u, std::memory_order_relaxed);
+    mDen300Bits.store(0u, std::memory_order_relaxed);
+    mRinginessBits.store(0u, std::memory_order_relaxed);
+    mWetEnvBits.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.18"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.19"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,18,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,19,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -215,12 +221,12 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     case paramMetalBoost:   return float(fMetalBoost);
     case paramExciteNoise:  return 0.0f;
 
-    case paramEDTms:        return mEDTms;
-    case paramRT60est:      return mRT60s;
-    case paramDensity100ms: return mDen100;
-    case paramDensity300ms: return mDen300;
-    case paramRinginess:    return mRinginess;
-    case paramWetEnv:       return mWetEnv;
+    case paramEDTms:        return bitsToFloat(mEDTmsBits.load(std::memory_order_relaxed));
+    case paramRT60est:      return bitsToFloat(mRT60sBits.load(std::memory_order_relaxed));
+    case paramDensity100ms: return bitsToFloat(mDen100Bits.load(std::memory_order_relaxed));
+    case paramDensity300ms: return bitsToFloat(mDen300Bits.load(std::memory_order_relaxed));
+    case paramRinginess:    return bitsToFloat(mRinginessBits.load(std::memory_order_relaxed));
+    case paramWetEnv:       return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
 
     default:                return 0.0f;
     }
@@ -254,7 +260,7 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         const float vm = std::max(0.0f, std::min(1.0f, v));
         fMatrixMorph = vm;
         fMatrixType = (vm < 0.5f) ? 0 : 1;
-        DBG("[DSP] morph=%.3f", double(fMatrixMorph));
+        DBG("[DSP] setParameterValue(MatrixMorph)=%.3f", double(v));
         break;
     }
     case paramPing:
@@ -278,13 +284,13 @@ void PluginTinyFdnReverb::initProgramName(uint32_t i, String& name) {
 }
 
 void PluginTinyFdnReverb::loadProgram(uint32_t i) {
+    DBG("[DSP] loadProgram(%u) called", i);
     if (i < kPresetCount) {
         setParameterValue(paramRt60,         kPresets[i].params[paramRt60]);
         setParameterValue(paramMix,          kPresets[i].params[paramMix]);
         setParameterValue(paramDelaySet,     kPresets[i].params[paramDelaySet]);
         setParameterValue(paramSize,         kPresets[i].params[paramSize]);
         setParameterValue(paramDampHz,       kPresets[i].params[paramDampHz]);
-        setParameterValue(paramMatrixMorph,  kPresets[i].params[paramMatrixMorph]);
         setParameterValue(paramModDepth,     kPresets[i].params[paramModDepth]);
         setParameterValue(paramDetune,       kPresets[i].params[paramDetune]);
         setParameterValue(paramMetalBoost,   kPresets[i].params[paramMetalBoost]);
@@ -325,6 +331,12 @@ void PluginTinyFdnReverb::activate() {
     for (auto& slot : mEnvTraceBits)
         slot.store(0u, std::memory_order_relaxed);
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+    mEDTmsBits.store(0u, std::memory_order_relaxed);
+    mRT60sBits.store(0u, std::memory_order_relaxed);
+    mDen100Bits.store(0u, std::memory_order_relaxed);
+    mDen300Bits.store(0u, std::memory_order_relaxed);
+    mRinginessBits.store(0u, std::memory_order_relaxed);
+    mWetEnvBits.store(0u, std::memory_order_relaxed);
 
     fLastSR = 0.0;
     DBG("[ACT] init done");
@@ -730,12 +742,21 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
     // summary line every ~50 ms
     mSamplesSincePush += frames;
     if (sr > 0.0 && mSamplesSincePush >= (uint32_t)(0.05 * sr)) {
-        setParameterValue(paramEDTms,        mEDTms);
-        setParameterValue(paramRT60est,      mRT60s);
-        setParameterValue(paramDensity100ms, mDen100);
-        setParameterValue(paramDensity300ms, mDen300);
-        setParameterValue(paramRinginess,    mRinginess);
-        setParameterValue(paramWetEnv,       mWetEnv);
+        // Publish meter snapshots for UI direct-access polling.
+        mEDTmsBits.store(floatToBits(mEDTms), std::memory_order_relaxed);
+        mRT60sBits.store(floatToBits(mRT60s), std::memory_order_relaxed);
+        mDen100Bits.store(floatToBits(mDen100), std::memory_order_relaxed);
+        mDen300Bits.store(floatToBits(mDen300), std::memory_order_relaxed);
+        mRinginessBits.store(floatToBits(mRinginess), std::memory_order_relaxed);
+        mWetEnvBits.store(floatToBits(mWetEnv), std::memory_order_relaxed);
+
+        DBG("[DSP] meter publish idx=[%u,%u,%u,%u,%u,%u]",
+            unsigned(paramEDTms),
+            unsigned(paramRT60est),
+            unsigned(paramDensity100ms),
+            unsigned(paramDensity300ms),
+            unsigned(paramRinginess),
+            unsigned(paramWetEnv));
 
         DBG("[RUNDBG] rt60=%.3f matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
             double(fRt60),

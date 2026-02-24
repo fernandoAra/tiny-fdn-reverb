@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.18";
+static constexpr const char* kPluginVersionText = "v1.19";
 static constexpr float kFontTitle = 18.0f;
 static constexpr float kFontLabel = 14.0f;
 static constexpr float kFontValue = 14.0f;
@@ -169,6 +169,13 @@ void UITinyFdnReverb::pullTraceSamples() noexcept
             pushTraceSample(fPluginInstance->getEnvTraceValue(fTraceReadCursor));
             ++fTraceReadCursor;
         }
+
+        fEDTms     = fPluginInstance->getMeterEDTms();
+        fRT60est   = fPluginInstance->getMeterRT60s();
+        fDen100    = fPluginInstance->getMeterDensity100();
+        fDen300    = fPluginInstance->getMeterDensity300();
+        fRinginess = fPluginInstance->getMeterRinginess();
+        fWetEnv    = fPluginInstance->getMeterWetEnv();
         return;
     }
 #endif
@@ -484,7 +491,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 15, "Tiny FDN Reverb v1.18 — Dal Santo core", nullptr);
+    text(12, 15, "Tiny FDN Reverb v1.19 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     const char* matrixDisplay = fIsMorphing ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder");
