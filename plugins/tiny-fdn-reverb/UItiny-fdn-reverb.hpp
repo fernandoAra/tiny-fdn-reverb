@@ -38,6 +38,7 @@ private:
     float fRt60 = 2.8f;
     float fMix  = 1.0f;
     int   fMatrixType = 0; // 0 Hadamard, 1 Householder
+    int   fHouseholderMode = 0; // 0 fixed, 1 diff
     int   fDelaySet   = 0; // 0 Prime,    1 Spread
     float fSize    = 1.0f;
     float fDampHz  = 6000.0f;
@@ -85,6 +86,7 @@ private:
     void layout();
     void pullTraceSamples() noexcept;
     void applyMatrixMorphFromUI(float value) noexcept;
+    void applyHouseholderModeFromUI(int mode) noexcept;
     void pushTraceSample(float value) noexcept;
     void drawEnvelopeTrace(const Rect& r);
     void drawSlider(const Rect& r, const char* label, float v, float vmin, float vmax);

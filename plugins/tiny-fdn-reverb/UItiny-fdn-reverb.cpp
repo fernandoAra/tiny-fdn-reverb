@@ -29,11 +29,11 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.20";
-static constexpr float kFontTitle = 18.0f;
-static constexpr float kFontLabel = 14.0f;
-static constexpr float kFontValue = 14.0f;
-static constexpr float kFontMonitor = 15.0f;
+static constexpr const char* kPluginVersionText = "v1.21";
+static constexpr float kFontTitle = 19.0f;
+static constexpr float kFontLabel = 15.0f;
+static constexpr float kFontValue = 15.0f;
+static constexpr float kFontMonitor = 16.0f;
 
 UITinyFdnReverb::UITinyFdnReverb()
 : UI(1040, 520) // +40px for extra row
@@ -153,6 +153,19 @@ void UITinyFdnReverb::applyMatrixMorphFromUI(float value) noexcept
 #endif
 }
 
+void UITinyFdnReverb::applyHouseholderModeFromUI(int mode) noexcept
+{
+    const int m = (mode != 0) ? 1 : 0;
+    fHouseholderMode = m;
+
+    // Layer-1 comparison is Fixed vs Diff Householder, so keep the matrix on Householder.
+    applyMatrixMorphFromUI(1.0f);
+
+    beginEdit(PluginTinyFdnReverb::paramHouseholderMode);
+    setParam(PluginTinyFdnReverb::paramHouseholderMode, float(m));
+    endEdit(PluginTinyFdnReverb::paramHouseholderMode);
+}
+
 void UITinyFdnReverb::pushTraceSample(float value) noexcept
 {
     fUiTrace[fUiTraceWrite & (kUiTraceSize - 1u)] = clampf(value, 0.f, 1.f);
@@ -172,6 +185,7 @@ void UITinyFdnReverb::pullTraceSamples() noexcept
         fMorph = morph;
         fMatrixType = (morph < 0.5f) ? 0 : 1;
         fIsMorphing = (morph > 0.01f && morph < 0.99f);
+        fHouseholderMode = fPluginInstance->getHouseholderMode();
 
         const uint32_t writeIndex = fPluginInstance->getEnvTraceWriteIndex();
         if (! fTraceReadInit) {
@@ -290,6 +304,9 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
     case PluginTinyFdnReverb::paramDensity300ms:  fDen300    = value; break;
     case PluginTinyFdnReverb::paramRinginess:     fRinginess = value; break;
     case PluginTinyFdnReverb::paramWetEnv:        fWetEnv    = value; break;
+    case PluginTinyFdnReverb::paramHouseholderMode:
+        fHouseholderMode = (int(std::lround(value)) >= 1) ? 1 : 0;
+        break;
     default: break;
     }
 }
@@ -511,11 +528,13 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 15, "Tiny FDN Reverb v1.20 — Dal Santo core", nullptr);
+    text(12, 15, "Tiny FDN Reverb v1.21 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
-    const char* matrixDisplay = fIsMorphing ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder");
-    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);
+    const char* matrixDisplay = fIsMorphing
+                              ? "Morphing"
+                              : ((fMorph <= 0.01f) ? "Hadamard" : (fHouseholderMode == 0 ? "FixedHouse" : "DiffHouse"));
+    drawToggle(rLayerMatrix, "Layer 1 Householder", "Fixed", "Diff", fHouseholderMode);
     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
     beginPath();
     roundedRect(rAdvancedBtn.x+2.f, rAdvancedBtn.y+2.f, rAdvancedBtn.w-4.f, rAdvancedBtn.h-4.f, 4.f);
@@ -544,10 +563,10 @@ void UITinyFdnReverb::onNanoDisplay()
     // Matrix diagnostics: helps distinguish visual toggle issues from DSP mode changes.
     {
         char diag[128];
-        std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), param=%s",
+        std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), mode=%s",
                       matrixDisplay,
                       fMorph,
-                      (fMatrixType == 0 ? "Hadamard" : "Householder"));
+                      (fHouseholderMode == 0 ? "Fixed" : "Diff"));
         fontSize(kFontMonitor);
         fillColor(Color(65,65,65));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
@@ -692,9 +711,9 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
 
         if (pointIn(rLayerMatrix, x, y)) {
             const float half = rLayerMatrix.w*0.5f;
-            const float snap = (x < rLayerMatrix.x+half) ? 0.0f : 1.0f;
-            applyMatrixMorphFromUI(snap);
-            DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
+            const int mode = (x < rLayerMatrix.x+half) ? 0 : 1;
+            applyHouseholderModeFromUI(mode);
+            DBG("[UI] layer1 householder mode=%d", mode);
             repaint();
             return true;
         }
