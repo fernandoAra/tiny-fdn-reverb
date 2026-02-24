@@ -630,6 +630,13 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
             beginEdit(PluginTinyFdnReverb::paramMatrixType);
             setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
             endEdit(PluginTinyFdnReverb::paramMatrixType);
+
+            // Keep Layer 1 mode in sync with the actual DSP blend selector.
+            const float snap = fMatrixType ? 1.0f : 0.0f;
+            fMorph = snap;
+            beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+            setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+            endEdit(PluginTinyFdnReverb::paramMatrixMorph);
             repaint();
             return true;
         }
