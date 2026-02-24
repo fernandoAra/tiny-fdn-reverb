@@ -472,7 +472,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v0.11 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v1.12 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);

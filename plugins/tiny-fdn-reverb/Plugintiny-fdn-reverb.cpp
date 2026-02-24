@@ -100,10 +100,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_0.11"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.12"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(0,3,1); } // DEMO R4+
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,12,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
