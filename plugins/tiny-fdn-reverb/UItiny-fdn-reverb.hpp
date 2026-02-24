@@ -7,6 +7,8 @@
 
 #include "DistrhoUI.hpp"
 #include "Plugintiny-fdn-reverb.hpp"
+#include <array>
+#include <chrono>
 
 // [BOILERPLATE: DPF namespace macros]
 START_NAMESPACE_DISTRHO
@@ -20,6 +22,7 @@ protected:
     // plugin → UI updates
     void parameterChanged(uint32_t index, float value) override;
     void programLoaded(uint32_t) override {}
+    void uiIdle() override;
 
     // drawing
     void onNanoDisplay() override;
@@ -48,16 +51,28 @@ private:
     // Outputs
     float fEDTms = 0.f, fRT60est = 0.f, fDen100 = 0.f, fDen300 = 0.f;
     float fRinginess = 0.f;
+    float fWetEnv = 0.f;
+
+    // Layering: default view + advanced panel
+    bool  fShowAdvanced = false;
 
     // dragging state
     enum DragTarget { DRAG_NONE, DRAG_RT60, DRAG_MIX, DRAG_SIZE, DRAG_DAMP, DRAG_MORPH, DRAG_MOD, DRAG_DETUNE } fDragging = DRAG_NONE;
 
     // layout rects
+    Rect rLayerMatrix{}, rAdvancedBtn{};
     Rect rMatrix{}, rDelay{};
     Rect rRt60{}, rSize{}, rDamp{}, rMix{}, rDecay{};
     Rect rPreset{}, rMatH{}, rMatHo{}, rMorph{};
     Rect rPing{}, rBurst{}, rMetal{}, rMod{}, rDet{};
     Rect rRing{};
+
+    // UI-side trace history used for visualization at UI refresh rate.
+    static constexpr uint32_t kUiTraceSize = 256;
+    std::array<float, kUiTraceSize> fUiTrace{};
+    uint32_t fUiTraceWrite = 0;
+    std::chrono::steady_clock::time_point fLastUiTick{};
+    bool fUiTickInit = false;
 
     // layout + drawing helpers
     void layout();

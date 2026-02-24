@@ -4,6 +4,7 @@
  */
 #include "UItiny-fdn-reverb.hpp"
 #include "NanoVG.hpp"   // NVGcontext + nvg* API
+#include <chrono>
 #include <cmath>
 #include <algorithm>
 #include <cstring>
@@ -56,6 +57,7 @@ UITinyFdnReverb::UITinyFdnReverb()
     }
 
     layout();
+    fUiTrace.fill(0.0f);
 }
 
 void UITinyFdnReverb::layout() {
@@ -63,6 +65,9 @@ void UITinyFdnReverb::layout() {
     const float W = getWidth(), H = getHeight();
 
     const float headerH = 28.f;
+    rLayerMatrix = { PAD, 4.f, 250.f, 20.f };
+    rAdvancedBtn = { W - PAD - 128.f, 4.f, 128.f, 20.f };
+
     rPreset = { PAD, headerH + 8.f, W - 2*PAD, 28.f };
 
     // Two-column layout
@@ -105,6 +110,24 @@ void UITinyFdnReverb::layout() {
 
     // Morph slider under right tiles
     rMorph = { rightX, rMatHo.y + rMatHo.h + 10.f, rightW, SL_H };
+}
+
+void UITinyFdnReverb::uiIdle()
+{
+    using clock = std::chrono::steady_clock;
+    const clock::time_point now = clock::now();
+    if (! fUiTickInit) {
+        fLastUiTick = now;
+        fUiTickInit = true;
+    }
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fLastUiTick).count();
+    if (elapsed >= 33) { // ~30 Hz refresh
+        fUiTrace[fUiTraceWrite & (kUiTraceSize - 1u)] = fWetEnv;
+        ++fUiTraceWrite;
+        fLastUiTick = now;
+        repaint();
+    }
 }
 
 
@@ -349,7 +372,20 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v0.1 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v0.11 — Dal Santo core", nullptr);
+
+    // Layer 1 skeleton controls (always visible).
+    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);
+    drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
+    beginPath();
+    roundedRect(rAdvancedBtn.x+2.f, rAdvancedBtn.y+2.f, rAdvancedBtn.w-4.f, rAdvancedBtn.h-4.f, 4.f);
+    fillColor(fShowAdvanced ? Color(120,180,255) : Color(210,210,210));
+    fill();
+    fontSize(12.f);
+    fillColor(Color(40,40,40));
+    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+    text(rAdvancedBtn.x + rAdvancedBtn.w*0.5f, rAdvancedBtn.y + rAdvancedBtn.h*0.5f,
+         fShowAdvanced ? "Advanced: ON" : "Advanced: OFF", nullptr);
 
     // preset strip
     drawPanel(this, rPreset.x, rPreset.y, rPreset.w, rPreset.h, 6, 235,235,235);
@@ -465,6 +501,22 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
     const float y = ev.pos.getY();
 
     if (ev.press) {
+        if (pointIn(rAdvancedBtn, x, y)) {
+            fShowAdvanced = !fShowAdvanced;
+            repaint();
+            return true;
+        }
+
+        if (pointIn(rLayerMatrix, x, y)) {
+            const float half = rLayerMatrix.w*0.5f;
+            fMatrixType = (x < rLayerMatrix.x+half) ? 0 : 1;
+            beginEdit(PluginTinyFdnReverb::paramMatrixType);
+            setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
+            endEdit(PluginTinyFdnReverb::paramMatrixType);
+            repaint();
+            return true;
+        }
+
         // sliders
         if (pointIn(rRt60, x, y)) { fDragging = DRAG_RT60; beginEdit(PluginTinyFdnReverb::paramRt60); return true; }
         if (pointIn(rSize, x, y))  { fDragging = DRAG_SIZE; beginEdit(PluginTinyFdnReverb::paramSize); return true; }
