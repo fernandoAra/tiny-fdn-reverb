@@ -29,6 +29,8 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
+static constexpr const char* kPluginVersionText = "v1.14";
+
 UITinyFdnReverb::UITinyFdnReverb()
 : UI(1040, 520) // +40px for extra row
 {
@@ -472,7 +474,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 14, "Tiny FDN Reverb v1.13 — Dal Santo core", nullptr);
+    text(12, 14, "Tiny FDN Reverb v1.14 — Dal Santo core", nullptr);
 
     // Layer 1 skeleton controls (always visible).
     drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);
@@ -486,6 +488,20 @@ void UITinyFdnReverb::onNanoDisplay()
     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
     text(rAdvancedBtn.x + rAdvancedBtn.w*0.5f, rAdvancedBtn.y + rAdvancedBtn.h*0.5f,
          fShowAdvanced ? "Advanced: ON" : "Advanced: OFF", nullptr);
+
+    // Always-visible version badge so the loaded build is unambiguous.
+    const float vbW = 72.f;
+    const float vbH = 18.f;
+    const float vbX = getWidth() - vbW - 10.f;
+    const float vbY = getHeight() - vbH - 8.f;
+    beginPath();
+    roundedRect(vbX, vbY, vbW, vbH, 4.f);
+    fillColor(Color(235,235,235));
+    fill();
+    fontSize(11.f);
+    fillColor(Color(30,30,30));
+    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+    text(vbX + vbW*0.5f, vbY + vbH*0.5f, kPluginVersionText, nullptr);
 
     Rect traceRect = rDecay;
     Rect ringRect = rRing;
