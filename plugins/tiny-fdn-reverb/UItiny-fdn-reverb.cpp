@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <mutex>
 // UI-thread logging for debugging host/UI message origin.
-#define TFDN_ENABLE_LOG 1
+// #define TFDN_ENABLE_LOG 1
 
 #if defined(TFDN_ENABLE_LOG)
 static FILE* gTFDNLog = nullptr;
@@ -167,7 +167,7 @@ void UITinyFdnReverb::applyHouseholderModeFromUI(int mode) noexcept
     if (fPluginInstance != nullptr)
         fPluginInstance->tagHouseholderModeUiSeq(seq);
 #endif
-    DBG("[UI] send HouseholderMode=%d seq=%u", m, unsigned(seq));
+    std::fprintf(stderr, "[UI] send HouseholderMode=%d seq=%u\n", m, unsigned(seq));
 
     beginEdit(PluginTinyFdnReverb::paramHouseholderMode);
     setParam(PluginTinyFdnReverb::paramHouseholderMode, float(m));

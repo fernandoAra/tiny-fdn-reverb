@@ -13,7 +13,7 @@
 // (generic helper, not core DSP logic)
 
 // Uncomment to enable heavy logging (NOT RT-safe in production!)
-#define TFDN_ENABLE_LOG 1
+// #define TFDN_ENABLE_LOG 1
 
 #if defined(TFDN_ENABLE_LOG)
 static FILE* gTFDNLog = nullptr;
@@ -292,11 +292,11 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
             const bool fromUi = (uiSeq != 0u && uiSeq != uiAck);
             if (fromUi)
                 mUiHouseholderSeqAck.store(uiSeq, std::memory_order_relaxed);
-            DBG("[DSP] recv HouseholderMode=%d (%s) origin=%s seq=%u",
-                fHouseholderMode,
-                fHouseholderMode ? "Diff" : "Fixed",
-                fromUi ? "UI" : "host/unknown",
-                fromUi ? unsigned(uiSeq) : 0u);
+            std::fprintf(stderr, "[DSP] recv HouseholderMode=%d (%s) origin=%s seq=%u\n",
+                         fHouseholderMode,
+                         fHouseholderMode ? "Diff" : "Fixed",
+                         fromUi ? "UI" : "host/unknown",
+                         fromUi ? unsigned(uiSeq) : 0u);
         }
         break;
 
