@@ -74,12 +74,16 @@ def _evaluate_householder_loss(
     dtype: torch.dtype,
     alpha_sparsity: float,
     spectral_mode: str,
+    train_lossless: bool,
     u: torch.Tensor,
     b: torch.Tensor,
     c_l: torch.Tensor,
     c_r: torch.Tensor,
 ) -> Dict[str, float]:
-    gains = gains_from_gamma(delay_samples, gamma, dtype=dtype).to(torch.device("cpu"))
+    if train_lossless:
+        gains = torch.ones((len(delay_samples),), dtype=dtype, device=torch.device("cpu"))
+    else:
+        gains = gains_from_gamma(delay_samples, gamma, dtype=dtype).to(torch.device("cpu"))
     losses = evaluate_transfer_losses(
         sr=fs,
         nfft=nfft,
@@ -124,6 +128,18 @@ def main() -> None:
     parser.add_argument("--alpha-sparsity", type=float, default=0.05)
     parser.add_argument("--alpha-density", type=float, default=None, help="Deprecated alias for --alpha-sparsity")
     parser.add_argument("--spectral-mode", choices=["unity", "mean"], default="unity")
+    parser.add_argument(
+        "--train-lossless",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Train with unit loop gain (paper-style colorless core objective).",
+    )
+    parser.add_argument(
+        "--optimize-with-decay",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Optimize using decay gains (experimental path). Overrides --train-lossless.",
+    )
     parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
@@ -150,9 +166,13 @@ def main() -> None:
     total_steps = int(args.steps) if args.steps is not None else (epochs * steps_per_epoch)
     gamma_used = float(args.gamma) if args.gamma is not None else gamma_from_rt60(fs, args.rt60)
     gamma_source = "explicit_gamma" if args.gamma is not None else "rt60_target"
+    train_lossless = bool(args.train_lossless) and (not bool(args.optimize_with_decay))
+    training_mode = "lossless-core" if train_lossless else "with-decay"
+    gamma_train = 1.0 if train_lossless else gamma_used
     print(
         f"[Config] fs={fs:.1f} rt60_target={float(args.rt60):.4f}s "
-        f"gamma_used={gamma_used:.9f} steps={total_steps} "
+        f"gamma_used={gamma_used:.9f} gamma_train={gamma_train:.9f} "
+        f"mode={training_mode} steps={total_steps} "
         f"(epochs={epochs}, steps_per_epoch={steps_per_epoch}, batch={batch}, M={M})"
     )
 
@@ -168,6 +188,7 @@ def main() -> None:
         batch_size=batch,
         lr=args.lr,
         gamma=gamma_used,
+        train_lossless=train_lossless,
         alpha_density=alpha_sparsity,
         learn_io=args.learn_io,
         freq_bins_per_step=batch,
@@ -178,6 +199,7 @@ def main() -> None:
         log_every=max(total_steps // 24, 1),
     )
 
+    gains_runtime = gains_from_gamma(delay_samples, gamma_used, dtype=dtype).to(torch.device("cpu"))
     preset = {
         "config_id": args.config_id,
         "sr": int(fs),
@@ -195,13 +217,17 @@ def main() -> None:
         "gamma": float(gamma_used),  # legacy alias
         "gamma_used": float(gamma_used),
         "gamma_source": gamma_source,
+        "train_lossless": bool(train_lossless),
+        "optimize_with_decay": bool(not train_lossless),
+        "gamma_train": float(gamma_train),
         "alpha_density": float(alpha_sparsity),
         "alpha_sparsity": float(alpha_sparsity),
         "spectral_mode": args.spectral_mode,
         "freq_bins_per_step": int(batch),
         "learn_io": bool(args.learn_io),
         "seed": int(args.seed),
-        "gains": _to_float_list(result.gains),
+        "gains": _to_float_list(gains_runtime),
+        "gains_training": _to_float_list(result.gains),
         "matrix_type": args.matrix_type,
         "fixed_u": [0.5, 0.5, 0.5, 0.5],
         "u": _to_float_list(result.u),
@@ -240,6 +266,7 @@ def main() -> None:
             dtype=dtype,
             alpha_sparsity=alpha_sparsity,
             spectral_mode=args.spectral_mode,
+            train_lossless=train_lossless,
             u=fixed_u,
             b=b_default,
             c_l=c_l_default,
@@ -259,6 +286,7 @@ def main() -> None:
                 batch_size=batch,
                 lr=args.lr,
                 gamma=gamma_used,
+                train_lossless=train_lossless,
                 alpha_density=alpha_sparsity,
                 learn_io=False,
                 freq_bins_per_step=batch,
@@ -283,6 +311,7 @@ def main() -> None:
                 batch_size=batch,
                 lr=args.lr,
                 gamma=gamma_used,
+                train_lossless=train_lossless,
                 alpha_density=alpha_sparsity,
                 learn_io=True,
                 freq_bins_per_step=batch,

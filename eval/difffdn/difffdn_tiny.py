@@ -361,6 +361,7 @@ def optimize_householder(
     batch_size: int = 2000,
     lr: float = 1e-3,
     gamma: Optional[float] = None,
+    train_lossless: bool = True,
     alpha_density: float = 0.0,
     learn_io: bool = False,
     freq_bins_per_step: int = 2000,
@@ -385,7 +386,13 @@ def optimize_householder(
         raise ValueError(f"This tiny model expects N=4, got N={n}")
 
     gamma_used = gamma_from_rt60(sr, rt60) if gamma is None else float(gamma)
-    gains = gains_from_gamma(delay.tolist(), gamma_used, dtype=dtype).to(device)
+    if train_lossless:
+        # Paper-style "colorless core" training: optimize with unit loop gain.
+        gains = torch.ones((n,), dtype=dtype, device=device)
+        gamma_train = 1.0
+    else:
+        gains = gains_from_gamma(delay.tolist(), gamma_used, dtype=dtype).to(device)
+        gamma_train = gamma_used
     matrix_kind = matrix_type.lower()
     if matrix_kind not in {"householder", "hadamard"}:
         raise ValueError("matrix_type must be 'householder' or 'hadamard'")
@@ -518,7 +525,7 @@ def optimize_householder(
 
     return OptimizeResult(
         matrix_type=matrix_kind,
-        gamma_used=float(gamma_used),
+        gamma_used=float(gamma_train),
         u=final_u.detach().cpu(),
         U=final_U.detach().cpu(),
         b=final_b.detach().cpu(),
