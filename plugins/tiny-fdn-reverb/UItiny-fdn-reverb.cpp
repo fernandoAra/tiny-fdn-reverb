@@ -10,8 +10,8 @@
 #include <cstring>
 #include <cstdio>
 #include <mutex>
-// Uncomment to enable heavy logging (NOT RT-safe!)
-// #define TFDN_ENABLE_LOG 1
+// UI-thread logging for debugging host/UI message origin.
+#define TFDN_ENABLE_LOG 1
 
 #if defined(TFDN_ENABLE_LOG)
 static FILE* gTFDNLog = nullptr;
@@ -29,14 +29,14 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.21";
+static constexpr const char* kPluginVersionText = "v1.22";
 static constexpr float kFontTitle = 19.0f;
 static constexpr float kFontLabel = 15.0f;
 static constexpr float kFontValue = 15.0f;
-static constexpr float kFontMonitor = 16.0f;
+static constexpr float kFontMonitor = 15.0f;
 
 UITinyFdnReverb::UITinyFdnReverb()
-: UI(1040, 520) // +40px for extra row
+: UI(1120, 640)
 {
     // Try a few common macOS fonts; pick the first that loads.
     int fid = -1;
@@ -73,22 +73,23 @@ void UITinyFdnReverb::layout() {
     const float PAD = 16.f;
     const float W = getWidth(), H = getHeight();
 
-    const float headerH = 28.f;
-    rLayerMatrix = { PAD, 4.f, 250.f, 20.f };
-    rAdvancedBtn = { W - PAD - 128.f, 4.f, 128.f, 20.f };
+    const float headerH = 42.f;
+    rLayerMatrix = { PAD, 8.f, 320.f, 26.f };
+    rAdvancedBtn = { W - PAD - 150.f, 8.f, 150.f, 26.f };
 
-    rPreset = { PAD, headerH + 8.f, W - 2*PAD, 28.f };
+    rPreset = { PAD, headerH + 56.f, W - 2*PAD, 30.f };
 
     // Two-column layout
     const float COL_GAP = 16.f;
-    const float leftW  = (W - 3*PAD) * 0.55f;        // ~55% for controls
-    const float rightW = (W - 3*PAD) - leftW;        // rest for visuals
+    const float contentW = W - 2*PAD - COL_GAP;
+    const float leftW  = contentW * 0.55f;           // ~55% for controls
+    const float rightW = contentW - leftW;           // rest for visuals
     const float leftX  = PAD;
     const float rightX = PAD + leftW + COL_GAP;
 
     // Row heights
-    const float TOG_H = 28.f;
-    const float SL_H  = 28.f;
+    const float TOG_H = 30.f;
+    const float SL_H  = 30.f;
 
     // Buttons
     rPing  = { rPreset.x + rPreset.w - 70.f, rPreset.y + 4.f, 62.f, rPreset.h - 8.f };
@@ -108,9 +109,10 @@ void UITinyFdnReverb::layout() {
     rDet  = { leftX, rMod.y  + rMod.h  + 10.f,   leftW, SL_H };
 
     // Decay panel (left column bottom)
-    const float decH = 100.f;
-    rDecay = { leftX, H - decH - 2*PAD, leftW, decH };
-    rRing  = { leftX, rDecay.y + rDecay.h + 8.f, leftW, 22.f };
+    const float ringH = 24.f;
+    const float decH = 120.f;
+    rRing  = { leftX, H - PAD - ringH, leftW, ringH };
+    rDecay = { leftX, rRing.y - 10.f - decH, leftW, decH };
 
     // Right column: two matrix tiles stacked
     const float tileH = (H - rPreset.y - rPreset.h - 4*PAD) * 0.45f;
@@ -157,9 +159,15 @@ void UITinyFdnReverb::applyHouseholderModeFromUI(int mode) noexcept
 {
     const int m = (mode != 0) ? 1 : 0;
     fHouseholderMode = m;
-
-    // Layer-1 comparison is Fixed vs Diff Householder, so keep the matrix on Householder.
-    applyMatrixMorphFromUI(1.0f);
+    const uint32_t seq = fUiHouseholderSeq.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    fLastUiHouseholderSeq = seq;
+#if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
+    if (fPluginInstance == nullptr)
+        fPluginInstance = static_cast<PluginTinyFdnReverb*>(getPluginInstancePointer());
+    if (fPluginInstance != nullptr)
+        fPluginInstance->tagHouseholderModeUiSeq(seq);
+#endif
+    DBG("[UI] send HouseholderMode=%d seq=%u", m, unsigned(seq));
 
     beginEdit(PluginTinyFdnReverb::paramHouseholderMode);
     setParam(PluginTinyFdnReverb::paramHouseholderMode, float(m));
@@ -229,9 +237,9 @@ void UITinyFdnReverb::drawEnvelopeTrace(const Rect& r)
     fill();
 
     const float x0 = r.x + 12.f;
-    const float y0 = r.y + 12.f;
+    const float y0 = r.y + 24.f;
     const float w  = r.w - 24.f;
-    const float h  = r.h - 24.f;
+    const float h  = r.h - 36.f;
 
     beginPath();
     moveTo(x0, y0 + h * 0.75f);
@@ -274,7 +282,7 @@ void UITinyFdnReverb::drawEnvelopeTrace(const Rect& r)
     fontSize(kFontLabel - 1.0f);
     fillColor(Color(60,60,60));
     textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(r.x + 10.f, r.y - 8.f, "Wet Tail Envelope (block RMS)", nullptr);
+    text(r.x + 10.f, r.y + 10.f, "Wet Tail Envelope (block RMS)", nullptr);
 }
 
 
@@ -524,16 +532,24 @@ void UITinyFdnReverb::drawRingMeter(const Rect& r, float v)
 
 void UITinyFdnReverb::onNanoDisplay()
 {
-    // background + header
-    beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
-    beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
-    fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12, 15, "Tiny FDN Reverb v1.21 — Dal Santo core", nullptr);
+    const float W = getWidth();
+    const float H = getHeight();
+    const Rect headerRect   = {0.f, 0.f, W, 42.f};
+    const Rect controlsRect = {16.f, 50.f, W - 32.f, 30.f};
+    const Rect monitorRect  = {16.f, 88.f, W - 32.f, 84.f};
+    const Rect graphRect    = {16.f, 182.f, W - 32.f, std::max(160.f, H - 182.f - 60.f)};
 
-    // Layer 1 skeleton controls (always visible).
+    // background + header band
+    beginPath(); rect(0, 0, W, H); fillColor(Color(250,250,250)); fill();
+    beginPath(); rect(headerRect.x, headerRect.y, headerRect.w, headerRect.h); fillColor(Color(245,245,245)); fill();
+    fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+    text(12.f, headerRect.y + headerRect.h*0.5f, "Tiny FDN Reverb v1.22 — Dal Santo core", nullptr);
+
     const char* matrixDisplay = fIsMorphing
                               ? "Morphing"
                               : ((fMorph <= 0.01f) ? "Hadamard" : (fHouseholderMode == 0 ? "FixedHouse" : "DiffHouse"));
+
+    // Layer 1 controls
     drawToggle(rLayerMatrix, "Layer 1 Householder", "Fixed", "Diff", fHouseholderMode);
     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
     beginPath();
@@ -546,40 +562,37 @@ void UITinyFdnReverb::onNanoDisplay()
     text(rAdvancedBtn.x + rAdvancedBtn.w*0.5f, rAdvancedBtn.y + rAdvancedBtn.h*0.5f,
          fShowAdvanced ? "Advanced: ON" : "Advanced: OFF", nullptr);
 
-    // Always-visible version badge so the loaded build is unambiguous.
-    const float vbW = 72.f;
-    const float vbH = 18.f;
-    const float vbX = getWidth() - vbW - 10.f;
-    const float vbY = getHeight() - vbH - 8.f;
-    beginPath();
-    roundedRect(vbX, vbY, vbW, vbH, 4.f);
-    fillColor(Color(235,235,235));
-    fill();
-    fontSize(kFontValue - 1.0f);
-    fillColor(Color(30,30,30));
-    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-    text(vbX + vbW*0.5f, vbY + vbH*0.5f, kPluginVersionText, nullptr);
-
-    // Matrix diagnostics: helps distinguish visual toggle issues from DSP mode changes.
-    {
-        char diag[128];
-        std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), mode=%s",
-                      matrixDisplay,
-                      fMorph,
-                      (fHouseholderMode == 0 ? "Fixed" : "Diff"));
+    // Readable monitor area (separate from graph area, no overlap).
+    if (! fShowAdvanced) {
+        drawPanel(this, monitorRect.x, monitorRect.y, monitorRect.w, monitorRect.h, 6, 240,240,240);
+        const float lineStep = kFontMonitor + 3.f;
+        float ty = monitorRect.y + 14.f;
+        char line1[160];
+        char line2[200];
+        std::snprintf(line1, sizeof(line1), "Matrix monitor: %s (morph=%.2f)  HouseholderMode=%s",
+                      matrixDisplay, fMorph, (fHouseholderMode == 0 ? "Fixed" : "Diff"));
+        std::snprintf(line2, sizeof(line2), "EDT: %s   RT60(est): %s",
+                      (fEDTms > 0.f ? "available" : "N/A"),
+                      (fRT60est > 0.f ? "available" : "N/A"));
+        fontSize(kFontMonitor);
+        fillColor(Color(55,55,55));
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        text(monitorRect.x + 10.f, ty, line1, nullptr); ty += lineStep;
+        text(monitorRect.x + 10.f, ty, line2, nullptr); ty += lineStep;
+        fontSize(kFontLabel - 1.f);
+        text(monitorRect.x + 10.f, ty, "Note: Fixed/Diff affects only Householder branch (Morph ~ 1 to hear the difference).", nullptr);
+    } else {
+        char line[196];
+        std::snprintf(line, sizeof(line), "Matrix monitor: %s  HouseholderMode=%s",
+                      matrixDisplay, (fHouseholderMode == 0 ? "Fixed" : "Diff"));
         fontSize(kFontMonitor);
         fillColor(Color(65,65,65));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        text(16.f, 38.f, diag, nullptr);
+        text(16.f, controlsRect.y + controlsRect.h + 6.f, line, nullptr);
     }
 
-    Rect traceRect = rDecay;
-    Rect ringRect = rRing;
-    if (! fShowAdvanced) {
-        const float top = rPreset.y;
-        traceRect = { 16.f, top, getWidth() - 32.f, getHeight() - top - 82.f };
-        ringRect  = { 16.f, traceRect.y + traceRect.h + 10.f, getWidth() - 32.f, 22.f };
-    }
+    Rect traceRect = graphRect;
+    Rect ringRect = {graphRect.x, graphRect.y + graphRect.h + 8.f, graphRect.w, 24.f};
 
     if (fShowAdvanced) {
         // preset strip
@@ -665,22 +678,31 @@ void UITinyFdnReverb::onNanoDisplay()
         text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
         std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
         text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
+
+        traceRect = rDecay;
+        ringRect = rRing;
     }
 
+    // Clip graph rendering so lines never draw into labels/monitor area.
+    scissor(traceRect.x, traceRect.y, traceRect.w, traceRect.h);
     drawEnvelopeTrace(traceRect);
     drawDensityBars(this, traceRect, fDen100, fDen300);
+    resetScissor();
     drawRingMeter(ringRect, fRinginess);
 
-    // metrics readout
-    fontSize(kFontLabel - 1.0f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
-    char m1[128], m2[128];
-    if (fEDTms > 0.f && fRT60est > 0.f)
-        std::snprintf(m1, sizeof(m1), "EDT: %.0f ms   RT60(est): %.2f s", fEDTms, fRT60est);
-    else
-        std::snprintf(m1, sizeof(m1), "EDT: N/A   RT60(est): N/A");
-    std::snprintf(m2, sizeof(m2), "Echo density: 100 ms = %.2f ev/ms   300 ms = %.2f ev/ms", fDen100, fDen300);
-    text(traceRect.x, traceRect.y + traceRect.h + 14.f, m1, nullptr);
-    text(traceRect.x, traceRect.y + traceRect.h + 30.f, m2, nullptr);
+    // Always-visible version badge
+    const float vbW = 72.f;
+    const float vbH = 18.f;
+    const float vbX = W - vbW - 10.f;
+    const float vbY = H - vbH - 8.f;
+    beginPath();
+    roundedRect(vbX, vbY, vbW, vbH, 4.f);
+    fillColor(Color(235,235,235));
+    fill();
+    fontSize(kFontValue - 1.0f);
+    fillColor(Color(30,30,30));
+    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+    text(vbX + vbW*0.5f, vbY + vbH*0.5f, kPluginVersionText, nullptr);
 }
 
 

@@ -105,6 +105,11 @@ public:
         return fHouseholderMode;
     }
 
+    void tagHouseholderModeUiSeq(uint32_t seq) noexcept
+    {
+        mUiHouseholderSeq.store(seq, std::memory_order_release);
+    }
+
     void setMatrixMorphFromUI(float v) noexcept
     {
         const float vm = (v < 0.f) ? 0.f : (v > 1.f ? 1.f : v);
@@ -231,6 +236,8 @@ private:
     std::atomic<uint32_t> mDen300Bits{0u};
     std::atomic<uint32_t> mRinginessBits{0u};
     std::atomic<uint32_t> mWetEnvBits{0u};
+    std::atomic<uint32_t> mUiHouseholderSeq{0u};
+    std::atomic<uint32_t> mUiHouseholderSeqAck{0u};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};

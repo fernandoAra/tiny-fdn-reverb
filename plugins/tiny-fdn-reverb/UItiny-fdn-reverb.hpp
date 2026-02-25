@@ -8,6 +8,7 @@
 #include "DistrhoUI.hpp"
 #include "Plugintiny-fdn-reverb.hpp"
 #include <array>
+#include <atomic>
 #include <chrono>
 
 // [BOILERPLATE: DPF namespace macros]
@@ -78,6 +79,8 @@ private:
     bool fUiTickInit = false;
     uint32_t fTraceReadCursor = 0;
     bool fTraceReadInit = false;
+    std::atomic<uint32_t> fUiHouseholderSeq{0u};
+    uint32_t fLastUiHouseholderSeq = 0u;
 #if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
     PluginTinyFdnReverb* fPluginInstance = nullptr;
 #endif

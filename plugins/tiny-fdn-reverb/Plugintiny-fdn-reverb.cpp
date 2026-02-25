@@ -110,12 +110,14 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mDen300Bits.store(0u, std::memory_order_relaxed);
     mRinginessBits.store(0u, std::memory_order_relaxed);
     mWetEnvBits.store(0u, std::memory_order_relaxed);
+    mUiHouseholderSeq.store(0u, std::memory_order_relaxed);
+    mUiHouseholderSeqAck.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.21"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.22"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,21,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,22,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -251,7 +253,7 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fMix = v;  /*no log*/ break;
     case paramMatrixType: {
         (void)v;
-        DBG("[DSP] type set attempt ignored");
+        DBG("[DSP] MatrixType host set %.3f ignored (compat/output-only)", double(v));
         break;
     }
     case paramDelaySet: {
@@ -268,7 +270,7 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramDampHz:
         fDampHz = v; /*no log*/ break;
     case paramMatrixMorph: {
-        DBG("[DSP] host MatrixMorph=%.3f ignored (internal state)", double(v));
+        DBG("[DSP] MatrixMorph host set %.3f ignored (compat/output-only)", double(v));
         break;
     }
     case paramPing:
@@ -284,9 +286,18 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fExciteNoise = (v >= 0.5f); DBG("[PARAM] NoiseBurst=%d", fExciteNoise); break;
     case paramHouseholderMode:
         fHouseholderMode = (v >= 0.5f) ? 1 : 0;
-        DBG("[PARAM] HouseholderMode=%d (%s)",
-            fHouseholderMode,
-            fHouseholderMode ? "Diff" : "Fixed");
+        {
+            const uint32_t uiSeq = mUiHouseholderSeq.load(std::memory_order_acquire);
+            const uint32_t uiAck = mUiHouseholderSeqAck.load(std::memory_order_relaxed);
+            const bool fromUi = (uiSeq != 0u && uiSeq != uiAck);
+            if (fromUi)
+                mUiHouseholderSeqAck.store(uiSeq, std::memory_order_relaxed);
+            DBG("[DSP] recv HouseholderMode=%d (%s) origin=%s seq=%u",
+                fHouseholderMode,
+                fHouseholderMode ? "Diff" : "Fixed",
+                fromUi ? "UI" : "host/unknown",
+                fromUi ? unsigned(uiSeq) : 0u);
+        }
         break;
 
     default: break;
@@ -391,6 +402,8 @@ void PluginTinyFdnReverb::activate() {
     mDen300Bits.store(0u, std::memory_order_relaxed);
     mRinginessBits.store(0u, std::memory_order_relaxed);
     mWetEnvBits.store(0u, std::memory_order_relaxed);
+    mUiHouseholderSeq.store(0u, std::memory_order_relaxed);
+    mUiHouseholderSeqAck.store(0u, std::memory_order_relaxed);
 
     fLastSR = 0.0;
     DBG("[ACT] init done");
