@@ -32,6 +32,9 @@ DEFAULT_FIXED_U = [0.5, 0.5, 0.5, 0.5]
 DEFAULT_B = [0.25, 0.25, 0.25, 0.25]
 DEFAULT_CL = [0.5, -0.5, 0.5, -0.5]
 DEFAULT_CR = [0.5, 0.5, -0.5, -0.5]
+LTI_COMPARE_MOD_DEPTH = 0.0
+LTI_COMPARE_DETUNE = 0.0
+LTI_COMPARE_DAMP_HZ = 1.0e9
 MODE_ORDER = ["fixed", "u_only", "full"]
 MODE_LABELS = {
     "fixed": "Fixed Householder",
@@ -310,6 +313,11 @@ def _build_mode_preset(
 
     p["config_id"] = f"{base_config_id}_{mode_key}"
     p["comparison_mode"] = mode_key
+    # Enforce LTI comparison conditions so analytic H(w) and IR render are aligned.
+    p["mod_depth"] = float(LTI_COMPARE_MOD_DEPTH)
+    p["detune"] = float(LTI_COMPARE_DETUNE)
+    p["damp_hz"] = float(LTI_COMPARE_DAMP_HZ)
+    p["compare_lti_enforced"] = True
     return p
 
 
@@ -686,12 +694,24 @@ def _plot_edc_overlay(
     plt.close(fig)
 
 
-def _max_db_error(a_db: np.ndarray, b_db: np.ndarray) -> float:
+def _max_db_error(
+    a_db: np.ndarray,
+    b_db: np.ndarray,
+    freqs: np.ndarray,
+    floor_db: float = -60.0,
+    max_freq_hz: float = 12000.0,
+) -> float:
     if a_db.shape != b_db.shape:
         raise ValueError(f"Shape mismatch for sanity check: {a_db.shape} vs {b_db.shape}")
     if a_db.size <= 1:
         return 0.0
-    diff = np.abs(a_db[1:] - b_db[1:])
+    if freqs.shape != a_db.shape:
+        raise ValueError(f"Frequency shape mismatch for sanity check: {freqs.shape} vs {a_db.shape}")
+    band = freqs[1:] <= float(max_freq_hz)
+    valid = band & (a_db[1:] > floor_db) & (b_db[1:] > floor_db)
+    if not np.any(valid):
+        return 0.0
+    diff = np.abs(a_db[1:][valid] - b_db[1:][valid])
     diff = diff[np.isfinite(diff)]
     if diff.size == 0:
         return 0.0
@@ -781,6 +801,8 @@ def _write_sidecar(
     channel: str,
     fixed_u_source: str,
     fixed_u: Sequence[float],
+    nfft_used: int,
+    aligned_length_samples: int,
 ) -> None:
     rt60_target = _preset_rt60_target(preset, float(preset.get("rt60", 2.8)))
     gamma_used = _preset_gamma_used(preset, float(preset["sr"]), rt60_target)
@@ -801,6 +823,8 @@ def _write_sidecar(
         "config_id": str(preset.get("config_id", base_config_id)),
         "sr": int(preset["sr"]),
         "nfft": int(preset.get("nfft", 2048)),
+        "nfft_used": int(nfft_used),
+        "aligned_length_samples": int(aligned_length_samples),
         "delay_set": _infer_delay_set(str(base_config_id), [int(v) for v in preset["delay_samples"]]),  # type: ignore[index]
         "delay_samples": [int(v) for v in preset["delay_samples"]],  # type: ignore[index]
         "rt60": float(preset.get("rt60", rt60_target)),
@@ -825,6 +849,10 @@ def _write_sidecar(
         "diffusion_proxy_window_ms": 20.0,
         "diffusion_proxy_hop_ms": 5.0,
         "diffusion_proxy_summary_window_s": [0.05, 0.30],
+        "compare_lti_enforced": bool(preset.get("compare_lti_enforced", False)),
+        "compare_mod_depth": float(preset.get("mod_depth", 0.0)),
+        "compare_detune": float(preset.get("detune", 0.0)),
+        "compare_damp_hz": float(preset.get("damp_hz", 0.0)),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -841,7 +869,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scope", choices=["fixed", "u_only", "full", "all"], default="all")
     parser.add_argument("--channel", choices=["L", "R"], default="L", help="Channel for analysis/FFT")
     parser.add_argument("--seconds", type=float, default=None, help="IR seconds (default: max(8, 4*rt60))")
-    parser.add_argument("--nfft", type=int, default=None, help="FFT size (default: preset nfft)")
+    parser.add_argument(
+        "--nfft",
+        type=int,
+        default=None,
+        help=(
+            "Minimum FFT size. Actual FFT uses max(requested, aligned IR length) "
+            "to avoid truncation (default requested value: preset nfft)."
+        ),
+    )
     parser.add_argument("--smooth-bins", type=int, default=25, help="Smoothing window for dB overlays")
     parser.add_argument(
         "--sanity-check",
@@ -926,9 +962,9 @@ def main() -> None:
         gamma_used_source = _preset_gamma_used(source, float(source.get("sr", 48000)), rt60)
         decay_tag = _decay_label(source, float(source.get("sr", 48000)), rt60)
         seconds = float(args.seconds) if args.seconds is not None else max(8.0, 4.0 * rt60)
-        nfft = int(args.nfft) if args.nfft is not None else int(source.get("nfft", 2048))
-        if nfft <= 0:
-            raise ValueError(f"nfft must be positive, got {nfft}")
+        nfft_req = int(args.nfft) if args.nfft is not None else int(source.get("nfft", 2048))
+        if nfft_req <= 0:
+            raise ValueError(f"nfft must be positive, got {nfft_req}")
 
         signals_raw: Dict[str, np.ndarray] = {}
         srs: Dict[str, int] = {}
@@ -974,6 +1010,12 @@ def main() -> None:
         min_len = min(sig.size for sig in signals_raw.values())
         if min_len < 2:
             raise RuntimeError(f"Signals too short after trim/alignment for {base_config_id}: {min_len}")
+        nfft = max(nfft_req, min_len)
+        if nfft > nfft_req:
+            print(
+                f"[Info] {base_config_id}: expanded nfft {nfft_req} -> {nfft} "
+                f"to avoid IR truncation"
+            )
 
         common_peak = max(float(np.max(np.abs(sig[:min_len]))) for sig in signals_raw.values())
         common_peak = max(common_peak, EPS)
@@ -995,6 +1037,11 @@ def main() -> None:
             ir_rel = ir_mag / (np.mean(ir_mag[1:]) + EPS)
             ir_mag_db = 20.0 * np.log10(np.maximum(ir_rel, EPS))
             ir_mag_db_s = _moving_average(ir_mag_db, args.smooth_bins)
+            # For analytic-vs-IR sanity, use unwindowed FFT to avoid extra mismatch from tapering.
+            ir_mag_unwindowed = np.abs(np.fft.rfft(sig, n=nfft))
+            ir_rel_unwindowed = ir_mag_unwindowed / (np.mean(ir_mag_unwindowed[1:]) + EPS)
+            ir_mag_db_unwindowed = 20.0 * np.log10(np.maximum(ir_rel_unwindowed, EPS))
+            ir_mag_db_unwindowed_s = _moving_average(ir_mag_db_unwindowed, args.smooth_bins)
 
             analytic_mag_lin, analytic_mag_db = _analytic_transfer_mag(
                 presets_rendered[mode_key],
@@ -1013,7 +1060,7 @@ def main() -> None:
                 rms_threshold_db=float(args.kurtosis_rms_threshold_db),
             )
             kurt_mean = _mean_in_window(kurt_t, kurt_curve, 0.05, 0.30)
-            sanity_max_db_error = _max_db_error(analytic_mag_db_s, ir_mag_db_s)
+            sanity_max_db_error = _max_db_error(analytic_mag_db_s, ir_mag_db_unwindowed_s, freqs)
             sanity_errors_db[mode_key] = sanity_max_db_error
 
             result = ScenarioResult(
@@ -1061,6 +1108,8 @@ def main() -> None:
                 channel=args.channel,
                 fixed_u_source=fixed_u_source,
                 fixed_u=fixed_u,
+                nfft_used=nfft,
+                aligned_length_samples=min_len,
             )
 
             u_vals = [float(v) for v in result.preset["u"]]  # type: ignore[index]
