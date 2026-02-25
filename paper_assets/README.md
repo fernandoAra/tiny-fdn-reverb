@@ -3,12 +3,16 @@
 ## Regenerate from scratch
 
 - Install Python deps: `python3 -m pip install torch numpy scipy matplotlib`
-- Generate a paper-like learned preset (offline only):  
-  `python3 eval/difffdn/optimize_householder.py --config-id householder_prime_rt60_2p8_paper --matrix-type householder --fs 48000 --nfft 2048 --M 480000 --batch 2000 --epochs 3 --lr 1e-3 --alpha-sparsity 0.05 --delay-samples 1499,2377,3217,4421 --rt60 2.8 --learn-io --seed 0 --out-dir eval/out/presets`
+- Generate a paper-like learned preset (offline only, lossless-first mode):  
+  `python3 eval/difffdn/optimize_householder.py --config-id householder_prime_rt60_2p8_paper --matrix-type householder --fs 48000 --nfft 2048 --M 480000 --batch 2000 --epochs 3 --lr 1e-3 --alpha-sparsity 0.05 --delay-samples 1499,2377,3217,4421 --rt60 2.8 --train-lossless --learn-io --seed 0 --out-dir eval/out/presets`
 - Run fixed-vs-diff comparison (analytic + IR FFT + EDC + diffusion + metrics + CSV):  
   `python3 eval/scripts/compare_fixed_vs_diff.py --preset eval/out/presets/householder_prime_rt60_2p8_paper.json --scope all --sanity-check`
 - Export paper-ready files:  
   `bash eval/scripts/export_paper_assets.sh`
+
+Notes:
+- `compare_fixed_vs_diff.py` forces LTI render settings for analytic-vs-IR consistency (`mod_depth=0`, `detune=0`, `damp_hz=1e9`).
+- FFT size is automatically expanded to avoid truncating long IRs (`nfft_used = max(requested_nfft, aligned_ir_length)`).
 
 ## Pinned external references
 
