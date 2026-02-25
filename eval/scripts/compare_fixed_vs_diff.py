@@ -453,13 +453,16 @@ def _short_time_excess_kurtosis(
             times.append((start + 0.5 * win) / float(sr))
             kurtosis.append(float("nan"))
             continue
-        mu = float(np.mean(frame))
-        sigma = float(np.std(frame))
-        if sigma < 1e-10:
-            k = 0.0
+        # Diffusion proxy uses RMS-normalized frames to avoid amplitude-driven blowups.
+        frame_n = frame / (frame_rms + EPS)
+        mu = float(np.mean(frame_n))
+        centered = frame_n - mu
+        m2 = float(np.mean(centered * centered))
+        if m2 < 1e-10:
+            k = float("nan")
         else:
-            z = (frame - mu) / sigma
-            k = float(np.mean(z**4) - 3.0)
+            m4 = float(np.mean(centered * centered * centered * centered))
+            k = float(m4 / (m2 * m2 + EPS) - 3.0)
         times.append((start + 0.5 * win) / float(sr))
         kurtosis.append(k)
 
@@ -640,7 +643,7 @@ def _plot_diffusion_curve(
         )
 
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Excess kurtosis")
+    ax.set_ylabel("Excess kurtosis (lower = more diffuse proxy)")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -740,7 +743,7 @@ def _plot_metrics_bars(
 
     axes[1, 1].bar(x, kurt_vals, color=colors)
     axes[1, 1].set_title("Diffusion proxy")
-    axes[1, 1].set_ylabel("mean excess kurtosis (50-300 ms)")
+    axes[1, 1].set_ylabel("mean excess kurtosis (50-300 ms, lower=better)")
 
     axes[1, 2].axis("off")
 
@@ -813,6 +816,15 @@ def _write_sidecar(
         "ir_seconds": float(ir_seconds),
         "channel_used_for_analysis": channel,
         "normalization_peak_common": float(normalization_peak),
+        "diffusion_proxy_name": "short_time_excess_kurtosis_rmsnorm",
+        "diffusion_proxy_definition": (
+            "Per-frame excess kurtosis on RMS-normalized frames; windows below "
+            "RMS threshold are ignored. Lower values indicate more Gaussian-like "
+            "amplitude statistics and higher diffusion (proxy)."
+        ),
+        "diffusion_proxy_window_ms": 20.0,
+        "diffusion_proxy_hop_ms": 5.0,
+        "diffusion_proxy_summary_window_s": [0.05, 0.30],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
