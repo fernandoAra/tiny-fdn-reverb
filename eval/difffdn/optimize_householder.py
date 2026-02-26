@@ -136,14 +136,14 @@ def main() -> None:
     parser.add_argument(
         "--train-lossless",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Train with unit loop gain (paper-style colorless core objective).",
+        default=False,
+        help="Optional: train with unit loop gain (lossless core objective).",
     )
     parser.add_argument(
         "--optimize-with-decay",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Optimize using decay gains (experimental path). Overrides --train-lossless.",
+        default=True,
+        help="Default stable mode: optimize using decay gains derived from RT60/gamma.",
     )
     parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--seed", type=int, default=0)
@@ -171,13 +171,14 @@ def main() -> None:
     total_steps = int(args.steps) if args.steps is not None else (epochs * steps_per_epoch)
     gamma_used = float(args.gamma) if args.gamma is not None else gamma_from_rt60(fs, args.rt60)
     gamma_source = "explicit_gamma" if args.gamma is not None else "rt60_target"
-    train_lossless = bool(args.train_lossless) and (not bool(args.optimize_with_decay))
+    train_lossless = bool(args.train_lossless) or (not bool(args.optimize_with_decay))
+    optimize_with_decay = not train_lossless
     training_mode = "lossless-core" if train_lossless else "with-decay"
     gamma_train = 1.0 if train_lossless else gamma_used
     print(
         f"[Config] fs={fs:.1f} rt60_target={float(args.rt60):.4f}s "
         f"gamma_used={gamma_used:.9f} gamma_train={gamma_train:.9f} "
-        f"mode={training_mode} spectral_mode={args.spectral_mode} steps={total_steps} "
+        f"training_mode={training_mode} spectral_mode={args.spectral_mode} steps={total_steps} "
         f"(epochs={epochs}, steps_per_epoch={steps_per_epoch}, batch={batch}, M={M})"
     )
 
@@ -223,7 +224,7 @@ def main() -> None:
         "gamma_used": float(gamma_used),
         "gamma_source": gamma_source,
         "train_lossless": bool(train_lossless),
-        "optimize_with_decay": bool(not train_lossless),
+        "optimize_with_decay": bool(optimize_with_decay),
         "gamma_train": float(gamma_train),
         "alpha_density": float(alpha_sparsity),
         "alpha_sparsity": float(alpha_sparsity),
