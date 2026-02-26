@@ -136,16 +136,16 @@ def main() -> None:
     parser.add_argument(
         "--train-lossless",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Optional: train with unit loop gain (lossless core objective).",
+        default=True,
+        help="Default paper mode: train with unit loop gain (lossless core objective).",
     )
     parser.add_argument(
         "--optimize-with-decay",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Default stable mode: optimize using decay gains derived from RT60/gamma.",
+        default=False,
+        help="Optional ablation: optimize using decay gains derived from RT60/gamma.",
     )
-    parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float64")
     parser.add_argument("--out-dir", default="eval/out/presets")
@@ -178,7 +178,9 @@ def main() -> None:
     print(
         f"[Config] fs={fs:.1f} rt60_target={float(args.rt60):.4f}s "
         f"gamma_used={gamma_used:.9f} gamma_train={gamma_train:.9f} "
-        f"training_mode={training_mode} spectral_mode={args.spectral_mode} steps={total_steps} "
+        f"training_mode={training_mode} train_lossless={str(train_lossless).lower()} "
+        f"spectral_mode={args.spectral_mode} learn_io={str(bool(args.learn_io)).lower()} "
+        f"alpha_sparsity={alpha_sparsity:.6f} steps={total_steps} "
         f"(epochs={epochs}, steps_per_epoch={steps_per_epoch}, batch={batch}, M={M})"
     )
 

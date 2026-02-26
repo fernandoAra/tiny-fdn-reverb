@@ -361,7 +361,7 @@ def optimize_householder(
     batch_size: int = 2000,
     lr: float = 1e-3,
     gamma: Optional[float] = None,
-    train_lossless: bool = False,
+    train_lossless: bool = True,
     alpha_density: float = 0.0,
     learn_io: bool = False,
     freq_bins_per_step: int = 2000,

@@ -198,24 +198,26 @@ void normalizeU(std::array<float, kN>& u) {
     }
 }
 
-void applyHadamard4(const std::array<float, kN>& in, std::array<float, kN>& out) {
-    const float a = in[0];
-    const float b = in[1];
-    const float c = in[2];
-    const float d = in[3];
-    out[0] = 0.5f * (+a + b + c + d);
-    out[1] = 0.5f * (+a - b + c - d);
-    out[2] = 0.5f * (+a + b - c - d);
-    out[3] = 0.5f * (+a - b - c + d);
+template <typename T>
+void applyHadamard4(const std::array<T, kN>& in, std::array<T, kN>& out) {
+    const T a = in[0];
+    const T b = in[1];
+    const T c = in[2];
+    const T d = in[3];
+    out[0] = T(0.5) * (+a + b + c + d);
+    out[1] = T(0.5) * (+a - b + c - d);
+    out[2] = T(0.5) * (+a + b - c - d);
+    out[3] = T(0.5) * (+a - b - c + d);
 }
 
-void applyHouseholder(const std::array<float, kN>& in, const std::array<float, kN>& u, std::array<float, kN>& out) {
-    float dot = 0.0f;
+template <typename T>
+void applyHouseholder(const std::array<T, kN>& in, const std::array<float, kN>& u, std::array<T, kN>& out) {
+    T dot = T(0);
     for (int i = 0; i < kN; ++i) {
-        dot += in[i] * u[i];
+        dot += in[i] * static_cast<T>(u[i]);
     }
     for (int i = 0; i < kN; ++i) {
-        out[i] = in[i] - 2.0f * u[i] * dot;
+        out[i] = in[i] - T(2) * static_cast<T>(u[i]) * dot;
     }
 }
 
@@ -328,10 +330,10 @@ int main(int argc, char** argv) {
         }
         const int totalSamples = std::max(1, static_cast<int>(std::lround(seconds * preset.sampleRate)));
 
-        std::array<std::vector<float>, kN> buffers;
+        std::array<std::vector<double>, kN> buffers;
         std::array<int, kN> index {};
         for (int i = 0; i < kN; ++i) {
-            buffers[i].assign(static_cast<size_t>(preset.delaySamples[i]), 0.0f);
+            buffers[i].assign(static_cast<size_t>(preset.delaySamples[i]), 0.0);
             index[i] = 0;
         }
 
@@ -340,14 +342,14 @@ int main(int argc, char** argv) {
 
         // No allocations in this loop.
         for (int n = 0; n < totalSamples; ++n) {
-            const float impulse = (n == 0) ? 1.0f : 0.0f;
+            const double impulse = (n == 0) ? 1.0 : 0.0;
 
-            std::array<float, kN> x {};
-            std::array<float, kN> g {};
-            std::array<float, kN> fb {};
+            std::array<double, kN> x {};
+            std::array<double, kN> g {};
+            std::array<double, kN> fb {};
             for (int i = 0; i < kN; ++i) {
                 x[i] = buffers[i][static_cast<size_t>(index[i])];
-                g[i] = preset.gains[i] * x[i];
+                g[i] = static_cast<double>(preset.gains[i]) * x[i];
             }
 
             if (preset.matrixType == "hadamard") {
@@ -357,22 +359,23 @@ int main(int argc, char** argv) {
             }
 
             for (int i = 0; i < kN; ++i) {
-                buffers[i][static_cast<size_t>(index[i])] = fb[i] + preset.b[i] * impulse;
+                buffers[i][static_cast<size_t>(index[i])] =
+                    fb[i] + static_cast<double>(preset.b[i]) * impulse;
                 ++index[i];
                 if (index[i] >= preset.delaySamples[i]) {
                     index[i] = 0;
                 }
             }
 
-            float yL = 0.0f;
-            float yR = 0.0f;
+            double yL = 0.0;
+            double yR = 0.0;
             for (int i = 0; i < kN; ++i) {
-                yL += preset.cL[i] * x[i];
-                yR += preset.cR[i] * x[i];
+                yL += static_cast<double>(preset.cL[i]) * x[i];
+                yR += static_cast<double>(preset.cR[i]) * x[i];
             }
 
-            out[static_cast<size_t>(2 * n)] = yL;
-            out[static_cast<size_t>(2 * n + 1)] = yR;
+            out[static_cast<size_t>(2 * n)] = static_cast<float>(yL);
+            out[static_cast<size_t>(2 * n + 1)] = static_cast<float>(yR);
         }
 
         writeWavFloat32(outWavPath, out, preset.sampleRate, 2);

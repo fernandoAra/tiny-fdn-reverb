@@ -28,7 +28,9 @@ MODE_COLORS = {
 
 METRICS = [
     "spectral_loss_like",
+    "spectral_loss_like_50_12k",
     "spectral_dev_db",
+    "spectral_dev_db_50_12k",
     "rt60_s",
     "edt_s",
     "ringiness",
@@ -38,12 +40,28 @@ METRICS = [
 
 METRIC_LABELS = {
     "spectral_loss_like": "spectral loss-like",
+    "spectral_loss_like_50_12k": "spectral loss-like (50-12k)",
     "spectral_dev_db": "spectral deviation (dB)",
+    "spectral_dev_db_50_12k": "spectral deviation 50-12k (dB)",
     "rt60_s": "RT60 (s)",
     "edt_s": "EDT (s)",
     "ringiness": "ringiness (peak/mean)",
     "kurtosis_mean_50_300ms": "kurtosis mean 50-300 ms",
     "echo_density_events_per_s_50_300ms": "echo density (events/s)",
+}
+
+DELTA_METRICS = [
+    "spectral_dev_db_50_12k",
+    "spectral_loss_like_50_12k",
+    "ringiness",
+    "echo_density_events_per_s_50_300ms",
+]
+
+DELTA_DIRECTION = {
+    "spectral_dev_db_50_12k": "lower is better",
+    "spectral_loss_like_50_12k": "lower is better",
+    "ringiness": "lower is better",
+    "echo_density_events_per_s_50_300ms": "higher is denser / better",
 }
 
 
@@ -136,9 +154,11 @@ def _plot_metrics_errorbars(
     stats_by_mode: Dict[str, Dict[str, Dict[str, float]]],
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, 4, figsize=(15, 8))
-    fig.suptitle("multiseed fixed vs diff metrics (mean ± std)", fontsize=15)
     metric_list = list(METRICS)
+    ncols = 4
+    nrows = int(np.ceil(float(len(metric_list)) / float(ncols)))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 3.8 * nrows))
+    fig.suptitle("multiseed fixed vs diff metrics (mean ± std)", fontsize=15)
     x = np.arange(len(MODE_ORDER))
     labels = [MODE_LABELS[m] for m in MODE_ORDER]
     colors = [MODE_COLORS[m] for m in MODE_ORDER]
@@ -153,7 +173,43 @@ def _plot_metrics_errorbars(
         ax.grid(axis="y", alpha=0.25)
         ax.tick_params(labelsize=9)
 
-    axes.flat[-1].axis("off")
+    flat_axes = np.atleast_1d(axes).reshape(-1)
+    for j in range(len(metric_list), len(flat_axes)):
+        flat_axes[j].axis("off")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)
+
+
+def _plot_deltas_errorbars(
+    out_path: Path,
+    *,
+    delta_stats: Dict[str, Dict[str, Dict[str, float]]],
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.0))
+    fig.suptitle("multiseed improvement vs fixed (mean ± std)", fontsize=15)
+    scen_order = ["u_only", "full"]
+    scen_labels = [MODE_LABELS[m] for m in scen_order]
+    scen_colors = [MODE_COLORS[m] for m in scen_order]
+    x = np.arange(len(scen_order))
+
+    for i, metric in enumerate(DELTA_METRICS):
+        ax = axes.flat[i]
+        means = [delta_stats.get(m, {}).get(metric, {}).get("mean", np.nan) for m in scen_order]
+        stds = [delta_stats.get(m, {}).get(metric, {}).get("std", np.nan) for m in scen_order]
+        ax.bar(x, means, yerr=stds, capsize=4, color=scen_colors, alpha=0.9)
+        ax.axhline(0.0, color="0.45", lw=1.0, ls="--")
+        subtitle = DELTA_DIRECTION.get(metric, "")
+        title = METRIC_LABELS.get(metric, metric)
+        if subtitle:
+            title = f"{title}\n({subtitle})"
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks(x, scen_labels, rotation=10, ha="right")
+        ax.set_ylabel("improvement (+ better)", fontsize=10)
+        ax.grid(axis="y", alpha=0.25)
+        ax.tick_params(labelsize=9)
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
@@ -207,9 +263,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--alpha-sparsity", type=float, default=0.05)
     parser.add_argument("--spectral-mode", choices=["unity", "mean"], default="unity")
-    parser.add_argument("--train-lossless", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--optimize-with-decay", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--train-lossless", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--optimize-with-decay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--learn-io",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable learned b/c optimization (paper experiment default).",
+    )
 
     # compare pass-through
     parser.add_argument("--scope", choices=["fixed", "u_only", "full", "all"], default="all")
@@ -428,6 +489,7 @@ def main() -> None:
 
     aggregate_summary = run_root / "aggregate_summary.csv"
     aggregate_stats = run_root / "aggregate_stats.json"
+    aggregate_deltas = run_root / "aggregate_deltas.csv"
     ordered_fields = ["seed"] + [k for k in per_seed_rows[0].keys() if k != "seed"]
     with aggregate_summary.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=ordered_fields)
@@ -435,13 +497,84 @@ def main() -> None:
         for row in per_seed_rows:
             writer.writerow({k: row.get(k, "") for k in ordered_fields})
 
+    # Paired deltas versus fixed baseline per seed.
+    by_seed_scope: Dict[int, Dict[str, Dict[str, str]]] = {}
+    for row in per_seed_rows:
+        try:
+            seed_i = int(row.get("seed", "0"))
+        except Exception:
+            continue
+        scope = str(row.get("scope", "")).strip()
+        if scope not in MODE_ORDER:
+            continue
+        by_seed_scope.setdefault(seed_i, {})[scope] = row
+
+    delta_rows: List[Dict[str, object]] = []
+    delta_values: Dict[str, Dict[str, List[float]]] = {"u_only": {}, "full": {}}
+    for scenario in ("u_only", "full"):
+        delta_values[scenario] = {m: [] for m in DELTA_METRICS}
+
+    for seed_i in sorted(by_seed_scope.keys()):
+        per_scope = by_seed_scope[seed_i]
+        fixed_row = per_scope.get("fixed")
+        if fixed_row is None:
+            continue
+        for scenario in ("u_only", "full"):
+            scenario_row = per_scope.get(scenario)
+            if scenario_row is None:
+                continue
+            for metric in DELTA_METRICS:
+                fixed_v = _safe_float(fixed_row.get(metric, ""))
+                scen_v = _safe_float(scenario_row.get(metric, ""))
+                if not (np.isfinite(fixed_v) and np.isfinite(scen_v)):
+                    continue
+                direction = DELTA_DIRECTION.get(metric, "")
+                if direction.startswith("lower"):
+                    delta_v = float(fixed_v - scen_v)
+                else:
+                    delta_v = float(scen_v - fixed_v)
+                delta_values[scenario][metric].append(delta_v)
+                delta_rows.append(
+                    {
+                        "seed": seed_i,
+                        "scenario": scenario,
+                        "metric": metric,
+                        "delta_vs_fixed": delta_v,
+                        "fixed_value": fixed_v,
+                        "scenario_value": scen_v,
+                        "direction_note": direction,
+                    }
+                )
+
+    with aggregate_deltas.open("w", newline="") as handle:
+        fields = [
+            "seed",
+            "scenario",
+            "metric",
+            "delta_vs_fixed",
+            "fixed_value",
+            "scenario_value",
+            "direction_note",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in delta_rows:
+            writer.writerow(row)
+
+    delta_stats: Dict[str, Dict[str, Dict[str, float]]] = {"u_only": {}, "full": {}}
+    for scenario in ("u_only", "full"):
+        for metric in DELTA_METRICS:
+            delta_stats[scenario][metric] = _aggregate_metric(delta_values[scenario][metric])
+
     aggregate_payload = {
         "config_id": args.config_id,
         "seeds": seeds,
         "n_rows_seed_mode": len(per_seed_rows),
         "metrics": stats_by_mode,
+        "delta_vs_fixed": delta_stats,
         "paths": {
             "aggregate_summary_csv": str(aggregate_summary),
+            "aggregate_deltas_csv": str(aggregate_deltas),
             "aggregate_stats_json": str(aggregate_stats),
         },
     }
@@ -449,13 +582,15 @@ def main() -> None:
 
     paper_dir.mkdir(parents=True, exist_ok=True)
     metrics_fig = paper_dir / "multiseed_metrics_errorbars.png"
+    deltas_fig = paper_dir / "multiseed_deltas_errorbars.png"
     diffusion_fig = paper_dir / "multiseed_diffusion_meanstd.png"
     echo_fig = paper_dir / "multiseed_echo_density_meanstd.png"
     _plot_metrics_errorbars(metrics_fig, stats_by_mode)
+    _plot_deltas_errorbars(deltas_fig, delta_stats=delta_stats)
     _plot_curve_mean_std(
         diffusion_fig,
-        title=f"multiseed kurtosis diffusion proxy ({args.config_id})",
-        ylabel="excess kurtosis (lower=more diffuse)",
+        title=f"multiseed impulsiveness proxy (kurtosis, exploratory) ({args.config_id})",
+        ylabel="excess kurtosis (lower = less impulsive)",
         curves_by_mode=curves_kurt,
         summary_tmin=float(args.echo_density_tmin),
         summary_tmax=float(args.echo_density_tmax),
@@ -473,9 +608,11 @@ def main() -> None:
     for seed in seeds:
         print(f"  - {preset_dir / f'{args.config_id}_seed{seed}.json'}")
     print(f"Wrote aggregate summary: {aggregate_summary}")
+    print(f"Wrote aggregate deltas:  {aggregate_deltas}")
     print(f"Wrote aggregate stats:   {aggregate_stats}")
     print("Wrote multiseed paper figures:")
     print(f"  - {metrics_fig}")
+    print(f"  - {deltas_fig}")
     print(f"  - {diffusion_fig}")
     print(f"  - {echo_fig}")
 

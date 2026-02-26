@@ -66,15 +66,41 @@ SUMMARY_FIELDS = [
     "u1",
     "u2",
     "u3",
+    "b0",
+    "b1",
+    "b2",
+    "b3",
+    "cL0",
+    "cL1",
+    "cL2",
+    "cL3",
+    "cR0",
+    "cR1",
+    "cR2",
+    "cR3",
+    "io_diff_b_maxabs_vs_default",
+    "io_diff_cL_maxabs_vs_default",
+    "io_diff_cR_maxabs_vs_default",
+    "full_has_learned_io",
     "spectral_loss_like",
+    "spectral_loss_like_50_12k",
     "spectral_dev_db",
+    "spectral_dev_db_50_12k",
     "rt60_s",
     "rt60_method",
     "edt_s",
     "ringiness",
     "kurtosis_mean_50_300ms",
     "echo_density_events_per_s_50_300ms",
+    "echo_events_count_50_300ms",
+    "echo_window_seconds",
     "sanity_max_db_error",
+    "sanity_max_db_error_hz",
+    "sanity_max_db_error_a_db",
+    "sanity_max_db_error_b_db",
+    "sanity_max_db_error_bin",
+    "paper_band_min_hz",
+    "paper_band_max_hz",
 ]
 
 
@@ -95,7 +121,9 @@ class ScenarioResult:
     rt60_method: str
     ringiness: float
     spectral_loss_like: float
+    spectral_loss_like_50_12k: float
     spectral_dev_db: float
+    spectral_dev_db_50_12k: float
     ir_mag_db: np.ndarray
     ir_mag_db_smooth: np.ndarray
     analytic_mag_db: np.ndarray
@@ -106,7 +134,18 @@ class ScenarioResult:
     echo_density_t: np.ndarray
     echo_density_curve: np.ndarray
     echo_density_events_per_s_50_300ms: float
+    echo_events_count_50_300ms: int
+    echo_window_seconds: float
+    io_diff_b_maxabs_vs_default: float
+    io_diff_cL_maxabs_vs_default: float
+    io_diff_cR_maxabs_vs_default: float
+    full_has_learned_io: bool
     sanity_max_db_error: float
+    sanity_max_db_error_hz: float
+    sanity_max_db_error_a_db: float
+    sanity_max_db_error_b_db: float
+    sanity_max_db_error_bin: int
+    sanity_valid_count: int
 
 
 def _parse_delay_csv(text: str) -> List[int]:
@@ -137,6 +176,26 @@ def _safe_vec4(payload: Dict[str, object], key: str, fallback: Sequence[float]) 
         except Exception:
             return [float(v) for v in fallback]
     return [float(v) for v in fallback]
+
+
+def _max_abs_diff(a: Sequence[float], b: Sequence[float]) -> float:
+    aa = np.asarray(a, dtype=np.float64)
+    bb = np.asarray(b, dtype=np.float64)
+    return float(np.max(np.abs(aa - bb)))
+
+
+def _full_mode_io_diagnostics(
+    base: Dict[str, object], *, eps: float = 1e-6
+) -> Tuple[bool, float, float, float]:
+    b_vec = _safe_vec4(base, "b", DEFAULT_B)
+    c_l_vec = _safe_vec4(base, "cL", DEFAULT_CL)
+    c_r_vec = _safe_vec4(base, "cR", DEFAULT_CR)
+    db = _max_abs_diff(b_vec, DEFAULT_B)
+    dcl = _max_abs_diff(c_l_vec, DEFAULT_CL)
+    dcr = _max_abs_diff(c_r_vec, DEFAULT_CR)
+    has_keys = all(k in base for k in ("b", "cL", "cR"))
+    has_learned = bool(has_keys and ((db > eps) or (dcl > eps) or (dcr > eps)))
+    return has_learned, db, dcl, dcr
 
 
 def _resolve_fixed_u(base: Dict[str, object]) -> Tuple[List[float], str]:
@@ -432,15 +491,38 @@ def _moving_average(x: np.ndarray, win_bins: int) -> np.ndarray:
     return np.convolve(x, ker, mode="same")
 
 
-def _spectral_loss_like_from_mag(mag_lin: np.ndarray) -> float:
-    rel = mag_lin / (np.mean(mag_lin[1:]) + EPS)
-    return float(np.mean((rel[1:] - 1.0) ** 2))
+def _freq_band_mask(freqs: np.ndarray, fmin_hz: float, fmax_hz: float) -> np.ndarray:
+    lo = max(float(fmin_hz), 0.0)
+    hi = max(float(fmax_hz), lo)
+    return (freqs >= lo) & (freqs <= hi)
 
 
-def _spectral_dev_db(smoothed_mag_db: np.ndarray, freqs: np.ndarray) -> float:
-    mask = freqs >= 50.0
-    if not np.any(mask):
+def _spectral_loss_like_from_mag(
+    mag_lin: np.ndarray,
+    freqs: np.ndarray,
+    *,
+    fmin_hz: float = 0.0,
+    fmax_hz: float = 1.0e12,
+) -> float:
+    mask = _freq_band_mask(freqs, fmin_hz, fmax_hz)
+    if mag_lin.size > 0:
+        mask &= (np.arange(mag_lin.size) > 0)
+    vals = mag_lin[mask]
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
         return 0.0
+    rel = vals / (np.mean(vals) + EPS)
+    return float(np.mean((rel - 1.0) ** 2))
+
+
+def _spectral_dev_db(
+    smoothed_mag_db: np.ndarray,
+    freqs: np.ndarray,
+    *,
+    fmin_hz: float = 50.0,
+    fmax_hz: float = 1.0e12,
+) -> float:
+    mask = _freq_band_mask(freqs, fmin_hz, fmax_hz)
     vals = smoothed_mag_db[mask]
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
@@ -519,10 +601,10 @@ def _echo_density_curve(
     hop_ms: float,
     tmin: float,
     tmax: float,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> Tuple[np.ndarray, np.ndarray, float, int, float]:
     t_env, env = _short_time_rms_envelope(x, sr, win_ms=window_ms, hop_ms=hop_ms)
     if env.size == 0:
-        return t_env, np.zeros_like(t_env), math.nan
+        return t_env, np.zeros_like(t_env), math.nan, 0, max(float(tmax) - float(tmin), 1e-12)
 
     thr = float(np.max(env) * (10.0 ** (float(threshold_db) / 20.0)))
     min_spacing_s = max(float(min_spacing_ms), 0.0) * 1e-3
@@ -554,8 +636,13 @@ def _echo_density_curve(
             count = np.count_nonzero((peaks >= lo) & (peaks <= hi))
             curve[i] = float(count) / win_s
 
-    summary = _mean_in_window(t_env, curve, tmin, tmax)
-    return t_env, curve, float(summary)
+    window_s = max(float(tmax) - float(tmin), 1e-12)
+    summary_count = 0
+    if peak_times:
+        peaks = np.asarray(peak_times, dtype=np.float64)
+        summary_count = int(np.count_nonzero((peaks >= float(tmin)) & (peaks <= float(tmax))))
+    summary_rate = float(summary_count / window_s)
+    return t_env, curve, summary_rate, summary_count, window_s
 
 
 def _mean_in_window(t: np.ndarray, y: np.ndarray, t0: float, t1: float) -> float:
@@ -752,11 +839,12 @@ def _plot_diffusion_curve(
     rms_threshold_db: float,
     echo_tmin: float,
     echo_tmax: float,
+    plot_max_seconds: float,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2, 1, figsize=(12.5, 8.0), sharex=True)
     fig.suptitle(
-        f"Diffusion / echo-density proxies ({config_id}, RMS>{rms_threshold_db:.0f} dBFS)",
+        f"Impulsiveness + echo-density proxies ({config_id}, RMS>{rms_threshold_db:.0f} dBFS)",
         fontsize=PLOT_TITLE_FONTSIZE,
     )
     ax_k = axes[0]
@@ -801,18 +889,21 @@ def _plot_diffusion_curve(
             label=f"{MODE_LABELS[mode_key]} ({echo_txt})",
         )
 
-    ax_k.set_ylabel("Excess kurtosis\n(lower = more diffuse)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_k.set_ylabel("Excess kurtosis\n(lower = less impulsive)", fontsize=PLOT_LABEL_FONTSIZE)
     ax_k.grid(alpha=0.25)
     ax_k.legend(fontsize=PLOT_LEGEND_FONTSIZE)
-    ax_k.set_title("Kurtosis proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_k.set_title("Impulsiveness proxy (kurtosis, exploratory)", fontsize=PLOT_LABEL_FONTSIZE)
     ax_k.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
 
     ax_e.set_xlabel("Time (s)", fontsize=PLOT_LABEL_FONTSIZE)
     ax_e.set_ylabel("Echo density\n(events/s)", fontsize=PLOT_LABEL_FONTSIZE)
     ax_e.grid(alpha=0.25)
     ax_e.legend(fontsize=PLOT_LEGEND_FONTSIZE)
-    ax_e.set_title("Echo-density proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_e.set_title("Echo-density proxy (primary temporal-density metric)", fontsize=PLOT_LABEL_FONTSIZE)
     ax_e.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
+    if plot_max_seconds > 0.0:
+        ax_k.set_xlim(0.0, float(plot_max_seconds))
+        ax_e.set_xlim(0.0, float(plot_max_seconds))
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
@@ -855,28 +946,59 @@ def _plot_edc_overlay(
     plt.close(fig)
 
 
-def _max_db_error(
+def _sanity_error_debug(
     a_db: np.ndarray,
     b_db: np.ndarray,
     freqs: np.ndarray,
     floor_db: float = -60.0,
     max_freq_hz: float = 12000.0,
-) -> float:
+) -> Dict[str, float]:
     if a_db.shape != b_db.shape:
         raise ValueError(f"Shape mismatch for sanity check: {a_db.shape} vs {b_db.shape}")
     if a_db.size <= 1:
-        return 0.0
+        return {
+            "max_db_error": 0.0,
+            "max_db_error_hz": math.nan,
+            "max_db_error_a_db": math.nan,
+            "max_db_error_b_db": math.nan,
+            "max_db_error_bin": -1.0,
+            "valid_count": 0.0,
+        }
     if freqs.shape != a_db.shape:
         raise ValueError(f"Frequency shape mismatch for sanity check: {freqs.shape} vs {a_db.shape}")
     band = freqs[1:] <= float(max_freq_hz)
     valid = band & (a_db[1:] > floor_db) & (b_db[1:] > floor_db)
     if not np.any(valid):
-        return 0.0
-    diff = np.abs(a_db[1:][valid] - b_db[1:][valid])
-    diff = diff[np.isfinite(diff)]
-    if diff.size == 0:
-        return 0.0
-    return float(np.max(diff))
+        return {
+            "max_db_error": 0.0,
+            "max_db_error_hz": math.nan,
+            "max_db_error_a_db": math.nan,
+            "max_db_error_b_db": math.nan,
+            "max_db_error_bin": -1.0,
+            "valid_count": 0.0,
+        }
+    abs_diff = np.abs(a_db[1:] - b_db[1:])
+    abs_diff[~valid] = np.nan
+    valid_idx = np.flatnonzero(np.isfinite(abs_diff))
+    if valid_idx.size == 0:
+        return {
+            "max_db_error": 0.0,
+            "max_db_error_hz": math.nan,
+            "max_db_error_a_db": math.nan,
+            "max_db_error_b_db": math.nan,
+            "max_db_error_bin": -1.0,
+            "valid_count": 0.0,
+        }
+    k = int(valid_idx[int(np.nanargmax(abs_diff[valid_idx]))])
+    bin_idx = k + 1  # diff array excludes DC bin.
+    return {
+        "max_db_error": float(abs_diff[k]),
+        "max_db_error_hz": float(freqs[bin_idx]),
+        "max_db_error_a_db": float(a_db[bin_idx]),
+        "max_db_error_b_db": float(b_db[bin_idx]),
+        "max_db_error_bin": float(bin_idx),
+        "valid_count": float(valid_idx.size),
+    }
 
 
 def _bar_values(vals: Sequence[float]) -> np.ndarray:
@@ -902,7 +1024,7 @@ def _plot_metrics_bars(
 
     edt_vals = _bar_values([results[k].edt_s for k in mode_keys])
     rt_vals = _bar_values([results[k].rt60_s for k in mode_keys])
-    spec_vals = _bar_values([results[k].spectral_dev_db for k in mode_keys])
+    spec_vals = _bar_values([results[k].spectral_dev_db_50_12k for k in mode_keys])
     ring_vals = _bar_values([results[k].ringiness for k in mode_keys])
     kurt_vals = _bar_values([results[k].kurtosis_mean_50_300ms for k in mode_keys])
     echo_vals = _bar_values([results[k].echo_density_events_per_s_50_300ms for k in mode_keys])
@@ -917,7 +1039,7 @@ def _plot_metrics_bars(
 
     axes[0, 2].bar(x, spec_vals, color=colors)
     axes[0, 2].set_title("Spectral deviation", fontsize=PLOT_LABEL_FONTSIZE)
-    axes[0, 2].set_ylabel("dB std (50 Hz - Nyquist)", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[0, 2].set_ylabel("dB std (50 Hz - 12 kHz)", fontsize=PLOT_LABEL_FONTSIZE)
 
     axes[1, 0].bar(x, ring_vals, color=colors)
     axes[1, 0].set_title("Ringiness", fontsize=PLOT_LABEL_FONTSIZE)
@@ -974,6 +1096,14 @@ def _write_sidecar(
     echo_density_hop_ms: float,
     echo_density_tmin: float,
     echo_density_tmax: float,
+    paper_band_min_hz: float,
+    paper_band_max_hz: float,
+    full_has_learned_io: bool,
+    io_diff_b_maxabs_vs_default: float,
+    io_diff_cL_maxabs_vs_default: float,
+    io_diff_cR_maxabs_vs_default: float,
+    echo_events_count_50_300ms: int,
+    echo_window_seconds: float,
 ) -> None:
     rt60_target = _preset_rt60_target(preset, float(preset.get("rt60", 2.8)))
     gamma_used = _preset_gamma_used(preset, float(preset["sr"]), rt60_target)
@@ -1030,6 +1160,14 @@ def _write_sidecar(
         "echo_density_window_ms": float(echo_density_window_ms),
         "echo_density_hop_ms": float(echo_density_hop_ms),
         "echo_density_summary_window_s": [float(echo_density_tmin), float(echo_density_tmax)],
+        "paper_band_hz": [float(paper_band_min_hz), float(paper_band_max_hz)],
+        "paper_band_metrics": ["spectral_loss_like_50_12k", "spectral_dev_db_50_12k"],
+        "full_has_learned_io": bool(full_has_learned_io),
+        "io_diff_b_maxabs_vs_default": float(io_diff_b_maxabs_vs_default),
+        "io_diff_cL_maxabs_vs_default": float(io_diff_cL_maxabs_vs_default),
+        "io_diff_cR_maxabs_vs_default": float(io_diff_cR_maxabs_vs_default),
+        "echo_events_count_50_300ms": int(echo_events_count_50_300ms),
+        "echo_window_seconds": float(echo_window_seconds),
         "compare_lti_enforced": bool(preset.get("compare_lti_enforced", False)),
         "compare_mod_depth": float(preset.get("mod_depth", 0.0)),
         "compare_detune": float(preset.get("detune", 0.0)),
@@ -1045,9 +1183,21 @@ def _write_run_payload(
     base_config_id: str,
     mode_keys: Sequence[str],
     results: Dict[str, ScenarioResult],
+    paper_band_min_hz: float,
+    paper_band_max_hz: float,
+    full_has_learned_io: bool,
 ) -> None:
     payload = {
         "config_id": base_config_id,
+        "paper_band": {
+            "min_hz": float(paper_band_min_hz),
+            "max_hz": float(paper_band_max_hz),
+            "recommended_metrics": [
+                "spectral_loss_like_50_12k",
+                "spectral_dev_db_50_12k",
+            ],
+        },
+        "full_has_learned_io": bool(full_has_learned_io),
         "modes": {},
     }
     for mode_key in mode_keys:
@@ -1058,13 +1208,26 @@ def _write_run_payload(
             "label": r.label,
             "metrics": {
                 "spectral_loss_like": float(r.spectral_loss_like),
+                "spectral_loss_like_50_12k": float(r.spectral_loss_like_50_12k),
                 "spectral_dev_db": float(r.spectral_dev_db),
+                "spectral_dev_db_50_12k": float(r.spectral_dev_db_50_12k),
                 "rt60_s": float(r.rt60_s),
                 "edt_s": float(r.edt_s),
                 "ringiness": float(r.ringiness),
                 "kurtosis_mean_50_300ms": float(r.kurtosis_mean_50_300ms),
                 "echo_density_events_per_s_50_300ms": float(r.echo_density_events_per_s_50_300ms),
+                "echo_events_count_50_300ms": int(r.echo_events_count_50_300ms),
+                "echo_window_seconds": float(r.echo_window_seconds),
+                "io_diff_b_maxabs_vs_default": float(r.io_diff_b_maxabs_vs_default),
+                "io_diff_cL_maxabs_vs_default": float(r.io_diff_cL_maxabs_vs_default),
+                "io_diff_cR_maxabs_vs_default": float(r.io_diff_cR_maxabs_vs_default),
+                "full_has_learned_io": bool(r.full_has_learned_io),
                 "sanity_max_db_error": float(r.sanity_max_db_error),
+                "sanity_max_db_error_hz": float(r.sanity_max_db_error_hz),
+                "sanity_max_db_error_a_db": float(r.sanity_max_db_error_a_db),
+                "sanity_max_db_error_b_db": float(r.sanity_max_db_error_b_db),
+                "sanity_max_db_error_bin": int(r.sanity_max_db_error_bin),
+                "sanity_valid_count": int(r.sanity_valid_count),
             },
             "curves": {
                 "kurtosis": {
@@ -1104,6 +1267,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smooth-bins", type=int, default=25, help="Smoothing window for dB overlays")
     parser.add_argument("--max-freq-hz", type=float, default=12000.0, help="Max frequency shown in overlays")
+    parser.add_argument(
+        "--paper-band-min-hz",
+        type=float,
+        default=50.0,
+        help="Lower bound (Hz) for paper-reported colorless metrics",
+    )
+    parser.add_argument(
+        "--paper-band-max-hz",
+        type=float,
+        default=12000.0,
+        help="Upper bound (Hz) for paper-reported colorless metrics",
+    )
+    parser.add_argument(
+        "--diffusion-plot-max-seconds",
+        type=float,
+        default=1.5,
+        help="Max x-axis time for diffusion/echo figure (s)",
+    )
     parser.add_argument(
         "--sanity-check",
         action=argparse.BooleanOptionalAction,
@@ -1219,8 +1400,14 @@ def main() -> None:
         base_config_id = str(source.get("config_id", preset_path.stem))
         slug = _slug(base_config_id)
         fixed_u, fixed_u_source = _resolve_fixed_u(source)
+        full_has_learned_io, _full_db, _full_dcl, _full_dcr = _full_mode_io_diagnostics(source)
 
         mode_keys = _scope_modes(args.scope)
+        if "full" in mode_keys and not full_has_learned_io:
+            print(
+                "[WARN] full mode has no learned IO; falling back to defaults "
+                "(full==u_only). Did you run optimizer with --learn-io?"
+            )
         rt60 = _preset_rt60_target(source, float(source.get("rt60", 2.8)))
         gamma_used_source = _preset_gamma_used(source, float(source.get("sr", 48000)), rt60)
         decay_tag = _decay_label(source, float(source.get("sr", 48000)), rt60)
@@ -1291,7 +1478,7 @@ def main() -> None:
         scenario_results: Dict[str, ScenarioResult] = {}
         analytic_db_by_mode: Dict[str, np.ndarray] = {}
         ir_db_by_mode: Dict[str, np.ndarray] = {}
-        sanity_errors_db: Dict[str, float] = {}
+        sanity_info_by_mode: Dict[str, Dict[str, float]] = {}
 
         for mode_key in mode_keys:
             sig = normalized_signals[mode_key]
@@ -1323,7 +1510,7 @@ def main() -> None:
                 rms_threshold_db=float(args.kurtosis_rms_threshold_db),
             )
             kurt_mean = _mean_in_window(kurt_t, kurt_curve, 0.05, 0.30)
-            echo_t, echo_curve, echo_mean = _echo_density_curve(
+            echo_t, echo_curve, echo_mean, echo_count, echo_window_s = _echo_density_curve(
                 sig,
                 sr,
                 threshold_db=float(args.echo_density_threshold_db),
@@ -1333,13 +1520,21 @@ def main() -> None:
                 tmin=float(args.echo_density_tmin),
                 tmax=float(args.echo_density_tmax),
             )
-            sanity_max_db_error = _max_db_error(
+            sanity_info = _sanity_error_debug(
                 analytic_mag_db_s,
                 ir_mag_db_unwindowed_s,
                 freqs,
                 max_freq_hz=float(args.max_freq_hz),
             )
-            sanity_errors_db[mode_key] = sanity_max_db_error
+            sanity_info_by_mode[mode_key] = sanity_info
+            if args.sanity_check:
+                print(
+                    f"[Sanity] mode={mode_key} max_err_db={sanity_info['max_db_error']:.6f} "
+                    f"at f={sanity_info['max_db_error_hz']:.2f}Hz "
+                    f"(a={sanity_info['max_db_error_a_db']:.3f}dB, "
+                    f"b={sanity_info['max_db_error_b_db']:.3f}dB) "
+                    f"valid_mask={int(sanity_info['valid_count'])}"
+                )
 
             result = ScenarioResult(
                 key=mode_key,
@@ -1356,8 +1551,20 @@ def main() -> None:
                 rt60_s=rt60_s,
                 rt60_method=rt60_method,
                 ringiness=_ringiness_proxy(sig),
-                spectral_loss_like=_spectral_loss_like_from_mag(analytic_mag_lin),
+                spectral_loss_like=_spectral_loss_like_from_mag(analytic_mag_lin, freqs),
+                spectral_loss_like_50_12k=_spectral_loss_like_from_mag(
+                    analytic_mag_lin,
+                    freqs,
+                    fmin_hz=float(args.paper_band_min_hz),
+                    fmax_hz=float(args.paper_band_max_hz),
+                ),
                 spectral_dev_db=_spectral_dev_db(analytic_mag_db_s, freqs),
+                spectral_dev_db_50_12k=_spectral_dev_db(
+                    analytic_mag_db_s,
+                    freqs,
+                    fmin_hz=float(args.paper_band_min_hz),
+                    fmax_hz=float(args.paper_band_max_hz),
+                ),
                 ir_mag_db=ir_mag_db,
                 ir_mag_db_smooth=ir_mag_db_s,
                 analytic_mag_db=analytic_mag_db,
@@ -1368,7 +1575,24 @@ def main() -> None:
                 echo_density_t=echo_t,
                 echo_density_curve=echo_curve,
                 echo_density_events_per_s_50_300ms=echo_mean,
-                sanity_max_db_error=sanity_max_db_error,
+                echo_events_count_50_300ms=int(echo_count),
+                echo_window_seconds=float(echo_window_s),
+                io_diff_b_maxabs_vs_default=_max_abs_diff(
+                    [float(v) for v in presets_rendered[mode_key]["b"]], DEFAULT_B
+                ),
+                io_diff_cL_maxabs_vs_default=_max_abs_diff(
+                    [float(v) for v in presets_rendered[mode_key]["cL"]], DEFAULT_CL
+                ),
+                io_diff_cR_maxabs_vs_default=_max_abs_diff(
+                    [float(v) for v in presets_rendered[mode_key]["cR"]], DEFAULT_CR
+                ),
+                full_has_learned_io=bool(full_has_learned_io),
+                sanity_max_db_error=float(sanity_info["max_db_error"]),
+                sanity_max_db_error_hz=float(sanity_info["max_db_error_hz"]),
+                sanity_max_db_error_a_db=float(sanity_info["max_db_error_a_db"]),
+                sanity_max_db_error_b_db=float(sanity_info["max_db_error_b_db"]),
+                sanity_max_db_error_bin=int(round(sanity_info["max_db_error_bin"])),
+                sanity_valid_count=int(round(sanity_info["valid_count"])),
             )
             scenario_results[mode_key] = result
             analytic_db_by_mode[mode_key] = result.analytic_mag_db
@@ -1397,9 +1621,20 @@ def main() -> None:
                 echo_density_hop_ms=float(args.echo_density_hop_ms),
                 echo_density_tmin=float(args.echo_density_tmin),
                 echo_density_tmax=float(args.echo_density_tmax),
+                paper_band_min_hz=float(args.paper_band_min_hz),
+                paper_band_max_hz=float(args.paper_band_max_hz),
+                full_has_learned_io=bool(full_has_learned_io),
+                io_diff_b_maxabs_vs_default=result.io_diff_b_maxabs_vs_default,
+                io_diff_cL_maxabs_vs_default=result.io_diff_cL_maxabs_vs_default,
+                io_diff_cR_maxabs_vs_default=result.io_diff_cR_maxabs_vs_default,
+                echo_events_count_50_300ms=result.echo_events_count_50_300ms,
+                echo_window_seconds=result.echo_window_seconds,
             )
 
             u_vals = [float(v) for v in result.preset["u"]]  # type: ignore[index]
+            b_vals = [float(v) for v in result.preset["b"]]  # type: ignore[index]
+            c_l_vals = [float(v) for v in result.preset["cL"]]  # type: ignore[index]
+            c_r_vals = [float(v) for v in result.preset["cR"]]  # type: ignore[index]
             summary_rows.append(
                 {
                     "timestamp": now_iso,
@@ -1414,15 +1649,41 @@ def main() -> None:
                     "u1": u_vals[1],
                     "u2": u_vals[2],
                     "u3": u_vals[3],
+                    "b0": b_vals[0],
+                    "b1": b_vals[1],
+                    "b2": b_vals[2],
+                    "b3": b_vals[3],
+                    "cL0": c_l_vals[0],
+                    "cL1": c_l_vals[1],
+                    "cL2": c_l_vals[2],
+                    "cL3": c_l_vals[3],
+                    "cR0": c_r_vals[0],
+                    "cR1": c_r_vals[1],
+                    "cR2": c_r_vals[2],
+                    "cR3": c_r_vals[3],
+                    "io_diff_b_maxabs_vs_default": result.io_diff_b_maxabs_vs_default,
+                    "io_diff_cL_maxabs_vs_default": result.io_diff_cL_maxabs_vs_default,
+                    "io_diff_cR_maxabs_vs_default": result.io_diff_cR_maxabs_vs_default,
+                    "full_has_learned_io": bool(full_has_learned_io),
                     "spectral_loss_like": result.spectral_loss_like,
+                    "spectral_loss_like_50_12k": result.spectral_loss_like_50_12k,
                     "spectral_dev_db": result.spectral_dev_db,
+                    "spectral_dev_db_50_12k": result.spectral_dev_db_50_12k,
                     "rt60_s": result.rt60_s,
                     "rt60_method": result.rt60_method,
                     "edt_s": result.edt_s,
                     "ringiness": result.ringiness,
                     "kurtosis_mean_50_300ms": result.kurtosis_mean_50_300ms,
                     "echo_density_events_per_s_50_300ms": result.echo_density_events_per_s_50_300ms,
+                    "echo_events_count_50_300ms": result.echo_events_count_50_300ms,
+                    "echo_window_seconds": result.echo_window_seconds,
                     "sanity_max_db_error": result.sanity_max_db_error,
+                    "sanity_max_db_error_hz": result.sanity_max_db_error_hz,
+                    "sanity_max_db_error_a_db": result.sanity_max_db_error_a_db,
+                    "sanity_max_db_error_b_db": result.sanity_max_db_error_b_db,
+                    "sanity_max_db_error_bin": result.sanity_max_db_error_bin,
+                    "paper_band_min_hz": float(args.paper_band_min_hz),
+                    "paper_band_max_hz": float(args.paper_band_max_hz),
                 }
             )
 
@@ -1462,6 +1723,7 @@ def main() -> None:
             rms_threshold_db=float(args.kurtosis_rms_threshold_db),
             echo_tmin=float(args.echo_density_tmin),
             echo_tmax=float(args.echo_density_tmax),
+            plot_max_seconds=float(args.diffusion_plot_max_seconds),
         )
         _plot_metrics_bars(
             metrics_fig,
@@ -1482,13 +1744,21 @@ def main() -> None:
             base_config_id=base_config_id,
             mode_keys=mode_keys,
             results=scenario_results,
+            paper_band_min_hz=float(args.paper_band_min_hz),
+            paper_band_max_hz=float(args.paper_band_max_hz),
+            full_has_learned_io=bool(full_has_learned_io),
         )
         generated_run_json.append(run_payload)
 
         if args.sanity_check:
             print(f"Sanity analytic-vs-IR max dB error ({base_config_id}):")
             for mode_key in mode_keys:
-                print(f"  - {mode_key}: {sanity_errors_db[mode_key]:.3f} dB")
+                sinfo = sanity_info_by_mode[mode_key]
+                print(
+                    f"  - {mode_key}: {sinfo['max_db_error']:.6f} dB "
+                    f"@ {sinfo['max_db_error_hz']:.2f} Hz "
+                    f"(bin={int(round(sinfo['max_db_error_bin']))})"
+                )
 
     if not summary_rows:
         raise RuntimeError("No rows produced. Check inputs.")
@@ -1509,6 +1779,14 @@ def main() -> None:
     _write_summary_csv(summary_table_csv, summary_rows)
     _write_summary_csv(summary_csv, summary_rows)
 
+    print(
+        "Echo-density summary window: "
+        f"{float(args.echo_density_tmin):.3f}s to {float(args.echo_density_tmax):.3f}s"
+    )
+    print(
+        "Paper band for colorless metrics: "
+        f"{float(args.paper_band_min_hz):.1f} Hz to {float(args.paper_band_max_hz):.1f} Hz"
+    )
     print("Rendered IR WAVs:")
     for wav in rendered_wavs:
         print(f"  - {wav}")

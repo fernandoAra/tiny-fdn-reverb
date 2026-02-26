@@ -60,12 +60,16 @@ if [[ -n "${MULTISEED_CONFIG}" ]]; then
   mkdir -p "${PAPER_FIG_MS_DIR}" "${PAPER_TAB_MS_DIR}"
   copy_required "${MULTI_PAPER_DIR}/multiseed_metrics_errorbars.png" \
     "${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
+  copy_required "${MULTI_PAPER_DIR}/multiseed_deltas_errorbars.png" \
+    "${PAPER_FIG_MS_DIR}/fig_multiseed_deltas_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_PAPER_DIR}/multiseed_diffusion_meanstd.png" \
     "${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_PAPER_DIR}/multiseed_echo_density_meanstd.png" \
     "${PAPER_FIG_MS_DIR}/fig_multiseed_echo_density_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_DIR}/aggregate_summary.csv" \
     "${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
+  copy_required "${MULTI_DIR}/aggregate_deltas.csv" \
+    "${PAPER_TAB_MS_DIR}/deltas_multiseed_${MULTISEED_CONFIG}.csv"
   copy_required "${MULTI_DIR}/aggregate_stats.json" \
     "${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
 fi
@@ -84,8 +88,10 @@ if [[ -n "${SELECTED_SLUG}" ]]; then
 fi
 if [[ -n "${MULTISEED_CONFIG}" ]]; then
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
+  echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_deltas_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_echo_density_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
+  echo "  ${PAPER_TAB_MS_DIR}/deltas_multiseed_${MULTISEED_CONFIG}.csv"
   echo "  ${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
 fi
