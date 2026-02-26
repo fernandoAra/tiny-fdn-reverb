@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.22";
+static constexpr const char* kPluginVersionText = "v1.25";
 static constexpr float kFontTitle = 19.0f;
 static constexpr float kFontLabel = 15.0f;
 static constexpr float kFontValue = 15.0f;
@@ -164,8 +164,10 @@ void UITinyFdnReverb::applyHouseholderModeFromUI(int mode) noexcept
 #if DISTRHO_PLUGIN_WANT_DIRECT_ACCESS
     if (fPluginInstance == nullptr)
         fPluginInstance = static_cast<PluginTinyFdnReverb*>(getPluginInstancePointer());
-    if (fPluginInstance != nullptr)
+    if (fPluginInstance != nullptr) {
+        fPluginInstance->markHouseholderTouchedByUI();
         fPluginInstance->tagHouseholderModeUiSeq(seq);
+    }
 #endif
     std::fprintf(stderr, "[UI] send HouseholderMode=%d seq=%u\n", m, unsigned(seq));
 
@@ -194,6 +196,11 @@ void UITinyFdnReverb::pullTraceSamples() noexcept
         fMatrixType = (morph < 0.5f) ? 0 : 1;
         fIsMorphing = (morph > 0.01f && morph < 0.99f);
         fHouseholderMode = fPluginInstance->getHouseholderMode();
+        fDiffRoutingMode = fPluginInstance->getDiffRoutingMode();
+        fActiveB0 = fPluginInstance->getActiveInjectionB(0);
+        fActiveB1 = fPluginInstance->getActiveInjectionB(1);
+        fActiveCL0 = fPluginInstance->getActiveOutputCL(0);
+        fActiveCL1 = fPluginInstance->getActiveOutputCL(1);
 
         const uint32_t writeIndex = fPluginInstance->getEnvTraceWriteIndex();
         if (! fTraceReadInit) {
@@ -536,18 +543,21 @@ void UITinyFdnReverb::onNanoDisplay()
     const float H = getHeight();
     const Rect headerRect   = {0.f, 0.f, W, 42.f};
     const Rect controlsRect = {16.f, 50.f, W - 32.f, 30.f};
-    const Rect monitorRect  = {16.f, 88.f, W - 32.f, 84.f};
-    const Rect graphRect    = {16.f, 182.f, W - 32.f, std::max(160.f, H - 182.f - 60.f)};
+    const Rect monitorRect  = {16.f, 88.f, W - 32.f, 104.f};
+    const Rect graphRect    = {16.f, 202.f, W - 32.f, std::max(160.f, H - 202.f - 60.f)};
 
     // background + header band
     beginPath(); rect(0, 0, W, H); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(headerRect.x, headerRect.y, headerRect.w, headerRect.h); fillColor(Color(245,245,245)); fill();
     fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12.f, headerRect.y + headerRect.h*0.5f, "Tiny FDN Reverb v1.22 — Dal Santo core", nullptr);
+    text(12.f, headerRect.y + headerRect.h*0.5f, "Tiny FDN Reverb v1.25 — Dal Santo core", nullptr);
 
     const char* matrixDisplay = fIsMorphing
                               ? "Morphing"
                               : ((fMorph <= 0.01f) ? "Hadamard" : (fHouseholderMode == 0 ? "FixedHouse" : "DiffHouse"));
+    const char* routeDisplay = (fDiffRoutingMode == 0)
+                                 ? "Fixed baseline"
+                                 : (fDiffRoutingMode == 1 ? "Diff u-only" : "Diff full (u+b+c)");
 
     // Layer 1 controls
     drawToggle(rLayerMatrix, "Layer 1 Householder", "Fixed", "Diff", fHouseholderMode);
@@ -568,10 +578,13 @@ void UITinyFdnReverb::onNanoDisplay()
         const float lineStep = kFontMonitor + 3.f;
         float ty = monitorRect.y + 14.f;
         char line1[160];
-        char line2[200];
+        char line2[220];
+        char line3[220];
         std::snprintf(line1, sizeof(line1), "Matrix monitor: %s (morph=%.2f)  HouseholderMode=%s",
                       matrixDisplay, fMorph, (fHouseholderMode == 0 ? "Fixed" : "Diff"));
-        std::snprintf(line2, sizeof(line2), "EDT: %s   RT60(est): %s",
+        std::snprintf(line2, sizeof(line2), "Diff routing: %s  b=[%.3f, %.3f]  cL=[%.3f, %.3f]",
+                      routeDisplay, fActiveB0, fActiveB1, fActiveCL0, fActiveCL1);
+        std::snprintf(line3, sizeof(line3), "EDT: %s   RT60(est): %s",
                       (fEDTms > 0.f ? "available" : "N/A"),
                       (fRT60est > 0.f ? "available" : "N/A"));
         fontSize(kFontMonitor);
@@ -579,12 +592,14 @@ void UITinyFdnReverb::onNanoDisplay()
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(monitorRect.x + 10.f, ty, line1, nullptr); ty += lineStep;
         text(monitorRect.x + 10.f, ty, line2, nullptr); ty += lineStep;
+        text(monitorRect.x + 10.f, ty, line3, nullptr); ty += lineStep;
         fontSize(kFontLabel - 1.f);
         text(monitorRect.x + 10.f, ty, "Note: Fixed/Diff affects only Householder branch (Morph ~ 1 to hear the difference).", nullptr);
     } else {
-        char line[196];
-        std::snprintf(line, sizeof(line), "Matrix monitor: %s  HouseholderMode=%s",
-                      matrixDisplay, (fHouseholderMode == 0 ? "Fixed" : "Diff"));
+        char line[256];
+        std::snprintf(line, sizeof(line), "Matrix: %s  HouseholderMode=%s  route=%s  b0=%.3f cL0=%.3f",
+                      matrixDisplay, (fHouseholderMode == 0 ? "Fixed" : "Diff"),
+                      routeDisplay, fActiveB0, fActiveCL0);
         fontSize(kFontMonitor);
         fillColor(Color(65,65,65));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);

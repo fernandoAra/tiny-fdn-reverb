@@ -1,0 +1,12 @@
+{
+  "preset_path": "eval/out/presets/householder_prime_sr44100.json",
+  "wav_path": "eval/out/verify/verify_householder_prime_sr44100_L.wav",
+  "config_id": "householder_prime_sr44100",
+  "matrix_type": "householder",
+  "sample_rate": 44100,
+  "seconds": 11.2,
+  "samples": 493920,
+  "channels": 2,
+  "delay_samples": [1499, 2377, 3217, 4421],
+  "note": "Offline tiny-FDN renderer; intentionally close to plugin core but not sample-identical."
+}

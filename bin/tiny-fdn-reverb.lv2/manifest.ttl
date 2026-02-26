@@ -1,0 +1,45 @@
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix opts: <http://lv2plug.in/ns/ext/options#> .
+@prefix pset: <http://lv2plug.in/ns/ext/presets#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb>
+    a lv2:Plugin ;
+    lv2:binary <tiny-fdn-reverb_dsp.dylib> ;
+    rdfs:seeAlso <tiny-fdn-reverb_dsp.ttl> .
+
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb#DPF_UI>
+    a ui:CocoaUI ;
+    ui:binary <tiny-fdn-reverb_dsp.dylib> ;
+    lv2:extensionData opts:interface ,
+                      ui:idleInterface ,
+                      ui:showInterface ,
+                      <http://kxstudio.sf.net/ns/lv2ext/programs#UIInterface> ;
+
+    lv2:optionalFeature ui:noUserResize ,
+                        ui:parent ,
+                        ui:touch ,
+                        ui:requestValue ;
+
+    lv2:requiredFeature opts:options ,
+                        ui:idleInterface ,
+                        <http://lv2plug.in/ns/ext/data-access> ,
+                        <http://lv2plug.in/ns/ext/instance-access> ,
+                        <http://lv2plug.in/ns/ext/urid#map> ;
+
+    opts:supportedOption <http://lv2plug.in/ns/ext/parameters#sampleRate> .
+
+
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset001>
+    a pset:Preset ;
+    lv2:appliesTo <https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb> ;
+    rdfs:label "Default" ;
+    rdfs:seeAlso <presets.ttl> .
+
+<https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb:preset002>
+    a pset:Preset ;
+    lv2:appliesTo <https://codeberg.org/fernandoAra/tiny-fdn-reverb#tiny-fdn-reverb> ;
+    rdfs:label "House+Spread" ;
+    rdfs:seeAlso <presets.ttl> .
+

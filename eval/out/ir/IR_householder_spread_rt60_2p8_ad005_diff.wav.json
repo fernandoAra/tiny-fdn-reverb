@@ -1,0 +1,57 @@
+{
+  "timestamp_utc": "2026-02-25T10:39:32.243226+00:00",
+  "git_commit": "92e7c1c41eda11cf1ab6c401f90344e422615e3a",
+  "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
+  "renderer": "eval/tools/gen_ir.cpp",
+  "base_config_id": "householder_spread_rt60_2p8_ad005",
+  "mode": "Diff Householder",
+  "source_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_ad005.json",
+  "render_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_ad005_diff.json",
+  "wav_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/ir/IR_householder_spread_rt60_2p8_ad005_diff.wav",
+  "config_id": "householder_spread_rt60_2p8_ad005_diff",
+  "sr": 48000,
+  "nfft": 2048,
+  "delay_set": "spread",
+  "delay_samples": [
+    1200,
+    1800,
+    2400,
+    3000
+  ],
+  "rt60": 2.8,
+  "gains": [
+    0.9401870948776289,
+    0.9116359195538747,
+    0.8839517733744355,
+    0.8571083267914532
+  ],
+  "matrix_type": "householder",
+  "householder_mode": "Diff Householder",
+  "u": [
+    -0.31351994345552914,
+    0.10963757144017298,
+    -0.9271294848957891,
+    0.17353894727470157
+  ],
+  "b": [
+    0.25,
+    0.25,
+    0.25,
+    0.25
+  ],
+  "cL": [
+    0.5,
+    -0.5,
+    0.5,
+    -0.5
+  ],
+  "cR": [
+    0.5,
+    0.5,
+    -0.5,
+    -0.5
+  ],
+  "ir_seconds": 11.2,
+  "channel_used_for_analysis": "L",
+  "normalization_peak_common": 0.21941952407360077
+}

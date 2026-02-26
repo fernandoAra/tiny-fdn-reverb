@@ -1,0 +1,305 @@
+commit 04cc82260b1b978d9129cc07eba72b14a31580a8
+Author: fernandoAra <112726322+fernandoAra@users.noreply.github.com>
+Date:   Tue Feb 24 19:31:58 2026 +0530
+
+    fix(ui): remove matrix -1 state and enlarge monitor text
+
+diff --git a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
+index 3242db5..b721b7f 100644
+--- a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
++++ b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
+@@ -100,10 +100,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
+     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+ }
+ 
+-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.17"; }
++const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.18"; }
+ const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
+ const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
+-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,17,0); }
++uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,18,0); }
+ int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
+ 
+ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
+diff --git a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
+index 8960a0c..cada807 100644
+--- a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
++++ b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
+@@ -29,7 +29,11 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
+ START_NAMESPACE_DISTRHO
+ using namespace DGL; // nvg* symbols
+ 
+-static constexpr const char* kPluginVersionText = "v1.17";
++static constexpr const char* kPluginVersionText = "v1.18";
++static constexpr float kFontTitle = 18.0f;
++static constexpr float kFontLabel = 14.0f;
++static constexpr float kFontValue = 14.0f;
++static constexpr float kFontMonitor = 15.0f;
+ 
+ UITinyFdnReverb::UITinyFdnReverb()
+ : UI(1040, 520) // +40px for extra row
+@@ -226,7 +230,7 @@ void UITinyFdnReverb::drawEnvelopeTrace(const Rect& r)
+         stroke();
+     }
+ 
+-    fontSize(12.f);
++    fontSize(kFontLabel - 1.0f);
+     fillColor(Color(60,60,60));
+     textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+     text(r.x + 10.f, r.y - 8.f, "Wet Tail Envelope (block RMS)", nullptr);
+@@ -237,15 +241,16 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
+     switch (index) {
+     case PluginTinyFdnReverb::paramRt60:       fRt60 = value; break;
+     case PluginTinyFdnReverb::paramMix:        fMix = value; break;
+-    case PluginTinyFdnReverb::paramMatrixType: fMatrixType = int(std::lround(value)); break;
++    case PluginTinyFdnReverb::paramMatrixType:
++        fMatrixType = (int(std::lround(value)) >= 1) ? 1 : 0;
++        break;
+     case PluginTinyFdnReverb::paramDelaySet:   fDelaySet   = int(std::lround(value)); break;
+     case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
+     case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
+     case PluginTinyFdnReverb::paramMatrixMorph:
+         fMorph  = clampf(value, 0.f, 1.f);
+-        if (fMorph <= 0.01f) fMatrixType = 0;
+-        else if (fMorph >= 0.99f) fMatrixType = 1;
+-        else fMatrixType = -1;
++        fMatrixType = (fMorph < 0.5f) ? 0 : 1;
++        fIsMorphing = (fMorph > 0.01f && fMorph < 0.99f);
+         break;
+ 
+     case PluginTinyFdnReverb::paramModDepth:  fModDepth = value; break;
+@@ -299,7 +304,7 @@ static void drawDensityBars(UITinyFdnReverb* self,
+         self->roundedRect(x, baseY - h, barW, h, 3.f);
+         self->fillColor(Color(120,180,255));
+         self->fill();
+-        self->fontSize(11.f);
++        self->fontSize(kFontValue - 2.0f);
+         self->fillColor(Color(50,50,50));
+         self->textAlign(UITinyFdnReverb::ALIGN_CENTER | UITinyFdnReverb::ALIGN_MIDDLE);
+         self->text(x + barW*0.5f, baseY + 8.f, lab, nullptr);
+@@ -342,8 +347,8 @@ void UITinyFdnReverb::drawSlider(const Rect& r, const char* label,
+     else if (std::strcmp(label, "Damp (Hz)") == 0)std::snprintf(buf, sizeof(buf), "%.0f Hz", v);
+     else                                          std::snprintf(buf, sizeof(buf), "%.0f %%", v*100.f);
+ 
+-    drawLabel(this, r.x + 10,         r.y - 4, label, 13.f, 50,50,50);
+-    drawLabel(this, r.x + r.w - 70.f, r.y - 4, buf,   13.f, 50,50,50);
++    drawLabel(this, r.x + 10,         r.y - 4, label, kFontLabel, 50,50,50);
++    drawLabel(this, r.x + r.w - 70.f, r.y - 4, buf,   kFontValue, 50,50,50);
+ }
+ 
+ void UITinyFdnReverb::drawToggle(const Rect& r, const char* label,
+@@ -365,9 +370,9 @@ void UITinyFdnReverb::drawToggle(const Rect& r, const char* label,
+     fillColor(v==1 ? 120:210, v==1 ? 180:210, v==1 ? 255:210);
+     fill();
+ 
+-    drawLabel(this, r.x+10, r.y-8, label, 12.f, 60,60,60);
+-    drawLabel(this, r.x+half*0.5f - 20, r.y + r.h*0.5f, a, 12.f);
+-    drawLabel(this, r.x+half + half*0.5f - 24, r.y + r.h*0.5f, b, 12.f);
++    drawLabel(this, r.x+10, r.y-8, label, kFontLabel, 60,60,60);
++    drawLabel(this, r.x+half*0.5f - 20, r.y + r.h*0.5f, a, kFontValue);
++    drawLabel(this, r.x+half + half*0.5f - 24, r.y + r.h*0.5f, b, kFontValue);
+ }
+ 
+ void UITinyFdnReverb::drawDecay(const Rect& r, float rt60)
+@@ -398,7 +403,7 @@ void UITinyFdnReverb::drawDecay(const Rect& r, float rt60)
+     strokeColor(40,40,40);
+     stroke();
+ 
+-    drawLabel(this, r.x+10, r.y-8, "Decay (analytic)", 12.f, 60,60,60);
++    drawLabel(this, r.x+10, r.y-8, "Decay (analytic)", kFontLabel, 60,60,60);
+ }
+ 
+ // ✅ Re-add the matrix tile helper
+@@ -412,7 +417,7 @@ static void drawMatrixTile(UITinyFdnReverb* self, const UITinyFdnReverb::Rect& r
+     self->fill();
+ 
+     // title
+-    self->fontSize(14.f);
++    self->fontSize(kFontLabel);
+     self->fillColor(Color(40,40,40));
+     self->textAlign(UITinyFdnReverb::ALIGN_LEFT | UITinyFdnReverb::ALIGN_MIDDLE);
+     self->text(r.x + 10.f, r.y + 14.f, title, nullptr);
+@@ -431,7 +436,7 @@ static void drawMatrixTile(UITinyFdnReverb* self, const UITinyFdnReverb::Rect& r
+         self->fillColor(Color(240 - R/3, 240 - (R+B)/6, 240 - B/3));
+         self->fill();
+         // sign marker
+-        self->fontSize(12.f);
++        self->fontSize(kFontValue - 1.0f);
+         self->fillColor(Color(50,50,50));
+         self->textAlign(UITinyFdnReverb::ALIGN_CENTER | UITinyFdnReverb::ALIGN_MIDDLE);
+         const char* s = (v >= 0.f) ? "+" : "–";
+@@ -448,7 +453,7 @@ void UITinyFdnReverb::drawRingMeter(const Rect& r, float v)
+     // label
+     char buf[64];
+     std::snprintf(buf, sizeof(buf), "Ringiness: %.2f", v);
+-    fontSize(12.f);
++    fontSize(kFontLabel);
+     fillColor(Color(60,60,60));
+     textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+     text(r.x + 10.f, r.y - 4.f, buf, nullptr);
+@@ -478,21 +483,18 @@ void UITinyFdnReverb::onNanoDisplay()
+     // background + header
+     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
+     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
+-    fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+-    text(12, 14, "Tiny FDN Reverb v1.17 — Dal Santo core", nullptr);
++    fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
++    text(12, 15, "Tiny FDN Reverb v1.18 — Dal Santo core", nullptr);
+ 
+     // Layer 1 skeleton controls (always visible).
+-    const int layerMode = (fMorph >= 0.5f ? 1 : 0);
+-    const char* matrixDisplay = (fMorph <= 0.01f)
+-        ? "Hadamard"
+-        : ((fMorph >= 0.99f) ? "Householder" : "Morphing");
+-    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", layerMode);
++    const char* matrixDisplay = fIsMorphing ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder");
++    drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", fMatrixType);
+     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
+     beginPath();
+     roundedRect(rAdvancedBtn.x+2.f, rAdvancedBtn.y+2.f, rAdvancedBtn.w-4.f, rAdvancedBtn.h-4.f, 4.f);
+     fillColor(fShowAdvanced ? Color(120,180,255) : Color(210,210,210));
+     fill();
+-    fontSize(12.f);
++    fontSize(kFontValue - 1.0f);
+     fillColor(Color(40,40,40));
+     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+     text(rAdvancedBtn.x + rAdvancedBtn.w*0.5f, rAdvancedBtn.y + rAdvancedBtn.h*0.5f,
+@@ -507,7 +509,7 @@ void UITinyFdnReverb::onNanoDisplay()
+     roundedRect(vbX, vbY, vbW, vbH, 4.f);
+     fillColor(Color(235,235,235));
+     fill();
+-    fontSize(11.f);
++    fontSize(kFontValue - 1.0f);
+     fillColor(Color(30,30,30));
+     textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+     text(vbX + vbW*0.5f, vbY + vbH*0.5f, kPluginVersionText, nullptr);
+@@ -518,11 +520,11 @@ void UITinyFdnReverb::onNanoDisplay()
+         std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), param=%s",
+                       matrixDisplay,
+                       fMorph,
+-                      (fMatrixType < 0 ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder")));
+-        fontSize(13.f);
++                      (fMatrixType == 0 ? "Hadamard" : "Householder"));
++        fontSize(kFontMonitor);
+         fillColor(Color(65,65,65));
+         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+-        text(16.f, 36.f, diag, nullptr);
++        text(16.f, 38.f, diag, nullptr);
+     }
+ 
+     Rect traceRect = rDecay;
+@@ -544,32 +546,32 @@ void UITinyFdnReverb::onNanoDisplay()
+             const bool on = (fMatrixType==target[s][0] && fDelaySet==target[s][1]);
+             beginPath(); roundedRect(sx, rPreset.y+3.f, segW-6.f, rPreset.h-6.f, 4.f);
+             fillColor(on ? Color(120,180,255) : Color(210,210,210)); fill();
+-            fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
++            fontSize(kFontValue - 1.0f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+             text(sx + (segW-6.f)*0.5f, rPreset.y + rPreset.h*0.5f, labs[s], nullptr);
+         }
+ 
+         // Buttons
+         beginPath(); roundedRect(rBurst.x, rBurst.y, rBurst.w, rBurst.h, 4.f);
+         fillColor(Color(255,150,120)); fill();
+-        fontSize(12.f); fillColor(Color(255,255,255));
++        fontSize(kFontValue - 1.0f); fillColor(Color(255,255,255));
+         textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+         text(rBurst.x + rBurst.w*0.5f, rBurst.y + rBurst.h*0.5f, "Burst", nullptr);
+ 
+         beginPath(); roundedRect(rPing.x, rPing.y, rPing.w, rPing.h, 4.f);
+         fillColor(Color(170,130,255)); fill();
+-        fontSize(12.f); fillColor(Color(255,255,255));
++        fontSize(kFontValue - 1.0f); fillColor(Color(255,255,255));
+         textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+         text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
+ 
+         // toggles + sliders (left column)
+-        drawToggle(rMatrix, "Matrix", "Hadamard", "House", layerMode);
++        drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
+         drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
+ 
+         // Metallic Boost (single toggle row)
+         drawPanel(this, rMetal.x, rMetal.y, rMetal.w, rMetal.h, 6, 235,235,235);
+         beginPath(); roundedRect(rMetal.x+4, rMetal.y+4, rMetal.w-8, rMetal.h-8, 4.f);
+         fillColor(fMetallic ? Color(240,120,120) : Color(210,210,210)); fill();
+-        fontSize(12.f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
++        fontSize(kFontValue - 1.0f); fillColor(Color(35,35,35)); textAlign(ALIGN_CENTER|ALIGN_MIDDLE);
+         text(rMetal.x + (rMetal.w-8)*0.5f, rMetal.y + rMetal.h*0.5f, "Over-spread delays", nullptr);
+ 
+         drawSlider(rRt60, "RT60",     fRt60,   0.20f, 8.00f);
+@@ -584,8 +586,8 @@ void UITinyFdnReverb::onNanoDisplay()
+             beginPath(); roundedRect(rDamp.x+8, rDamp.y + rDamp.h*0.5f - 3, (knobX - (rDamp.x+8)), 6, 3); fillColor(Color(120,180,255)); fill();
+             beginPath(); circle(knobX, rDamp.y + rDamp.h*0.5f, 9.f); fillColor(Color(40,40,40)); fill();
+             char hz[64]; std::snprintf(hz, sizeof(hz), "%.0f Hz", fDampHz);
+-            drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", 13.f, 50,50,50);
+-            drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, 13.f, 50,50,50);
++            drawLabel(this, rDamp.x + 10, rDamp.y - 4, "Damp (Hz)", kFontLabel, 50,50,50);
++            drawLabel(this, rDamp.x + rDamp.w - 80, rDamp.y - 4, hz, kFontValue, 50,50,50);
+         }
+ 
+         drawSlider(rMix,  "Mix",       fMix,      0.00f, 1.00f);
+@@ -611,7 +613,7 @@ void UITinyFdnReverb::onNanoDisplay()
+         drawSlider(rMorph, "Morph (H ⟷ House)", fMorph, 0.0f, 1.0f);
+ 
+         // captions under toggles
+-        fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
++        fontSize(kFontLabel - 1.0f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+         char line[64];
+         std::snprintf(line, sizeof(line), "Matrix: %s", matrixDisplay);
+         text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
+@@ -624,7 +626,7 @@ void UITinyFdnReverb::onNanoDisplay()
+     drawRingMeter(ringRect, fRinginess);
+ 
+     // metrics readout
+-    fontSize(12.f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
++    fontSize(kFontLabel - 1.0f); fillColor(Color(50,50,50)); textAlign(ALIGN_LEFT|ALIGN_MIDDLE);
+     char m1[128], m2[128];
+     if (fEDTms > 0.f && fRT60est > 0.f)
+         std::snprintf(m1, sizeof(m1), "EDT: %.0f ms   RT60(est): %.2f s", fEDTms, fRT60est);
+@@ -667,6 +669,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+             const float snap = (x < rLayerMatrix.x+half) ? 0.0f : 1.0f;
+             fMorph = snap;
+             fMatrixType = int(std::lround(snap));
++            fIsMorphing = false;
+             DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
+             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+@@ -707,6 +710,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+             const float snap = (x < rMatrix.x+half) ? 0.0f : 1.0f;
+             fMorph = snap;
+             fMatrixType = int(std::lround(snap));
++            fIsMorphing = false;
+             DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
+             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+@@ -744,6 +748,7 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+                 endEdit(PluginTinyFdnReverb::paramDelaySet);
+                 fMorph = float(m);
+                 fMatrixType = m;
++                fIsMorphing = false;
+                 DBG("[UI] set morph=%d", m);
+                 beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+                 setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
+@@ -798,7 +803,10 @@ bool UITinyFdnReverb::onMotion(const MotionEvent& ev) {
+     } else if (fDragging == DRAG_MORPH) {
+         const float t = sliderT(rMorph);
+         const float v = t;
+-        fMorph = v; setParam(PluginTinyFdnReverb::paramMatrixMorph, v);
++        fMorph = v;
++        fMatrixType = (v < 0.5f) ? 0 : 1;
++        fIsMorphing = (v > 0.01f && v < 0.99f);
++        setParam(PluginTinyFdnReverb::paramMatrixMorph, v);
+     } else if (fDragging == DRAG_MOD) {
+         const float t = sliderT(rMod);
+         const float v = t;
+diff --git a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.hpp b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.hpp
+index 9597afb..2cd58bc 100644
+--- a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.hpp
++++ b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.hpp
+@@ -42,6 +42,7 @@ private:
+     float fSize    = 1.0f;
+     float fDampHz  = 6000.0f;
+     float fMorph   = 0.0f;
++    bool  fIsMorphing = false;
+     
+ 
+     // NEW controls

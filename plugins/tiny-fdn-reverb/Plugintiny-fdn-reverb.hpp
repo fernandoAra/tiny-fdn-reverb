@@ -105,6 +105,26 @@ public:
         return fHouseholderMode;
     }
 
+    int getDiffRoutingMode() const noexcept
+    {
+        return mDiffRoutingMode;
+    }
+
+    float getActiveInjectionB(const uint32_t index) const noexcept
+    {
+        return mInjectionBActive[index & (kN - 1u)];
+    }
+
+    float getActiveOutputCL(const uint32_t index) const noexcept
+    {
+        return mOutputCLActive[index & (kN - 1u)];
+    }
+
+    void markHouseholderTouchedByUI() noexcept
+    {
+        mHouseholderTouchedByUI.store(true, std::memory_order_release);
+    }
+
     void tagHouseholderModeUiSeq(uint32_t seq) noexcept
     {
         mUiHouseholderSeq.store(seq, std::memory_order_release);
@@ -195,6 +215,7 @@ private:
     int    fAppliedMatrixType = 0;
     int    fAppliedMetalBoost = 0;
     int    fAppliedHouseholderMode = 0;
+    int    fAppliedDiffRoutingMode = -1;
 
     // short mute after topology changes (samples)
     int    mMuteSamples = 0;
@@ -222,6 +243,17 @@ private:
     std::array<float, kN> mHouseholderUFixed {{0.5f, 0.5f, 0.5f, 0.5f}};
     std::array<float, kN> mHouseholderUDiff  {{0.5f, 0.5f, 0.5f, 0.5f}};
     std::array<float, kN> mHouseholderUActive{{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mInjectionBFixed{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLFixed{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRFixed{{0.5f, 0.5f, -0.5f, -0.5f}};
+    std::array<float, kN> mInjectionBDiff{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLDiff{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRDiff{{0.5f, 0.5f, -0.5f, -0.5f}};
+    std::array<float, kN> mInjectionBActive{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLActive{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRActive{{0.5f, 0.5f, -0.5f, -0.5f}};
+    bool mDiffPresetHasFullIo = false;
+    int mDiffRoutingMode = 0; // 0=fixed baseline, 1=Diff u-only, 2=Diff full (u+b+c)
     const DiffPreset* mActiveDiffPreset = nullptr;
 
     // throttle UI updates to ~20 Hz
@@ -238,6 +270,8 @@ private:
     std::atomic<uint32_t> mWetEnvBits{0u};
     std::atomic<uint32_t> mUiHouseholderSeq{0u};
     std::atomic<uint32_t> mUiHouseholderSeqAck{0u};
+    std::atomic<bool> mHouseholderTouchedByUI{false};
+    std::atomic<uint64_t> mHouseholderIgnoreLogMs{0u};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};
@@ -274,6 +308,8 @@ private:
     void updateLineGainsFromRt60(double sr) noexcept;
     void updateDiffPresetForContext(double sr) noexcept;
     void updateActiveHouseholderU() noexcept;
+    static bool isFiniteVector(const std::array<float, kN>& v) noexcept;
+    static float maxAbsDiff(const std::array<float, kN>& a, const std::array<float, kN>& b) noexcept;
     static void normalizeHouseholderU(std::array<float, kN>& u) noexcept;
     inline void hadamardMix4(const float in[kN], float out[kN]) const noexcept;
     inline void householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept;

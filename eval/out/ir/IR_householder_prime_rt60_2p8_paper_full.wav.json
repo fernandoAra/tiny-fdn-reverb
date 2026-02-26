@@ -1,0 +1,92 @@
+{
+  "timestamp_utc": "2026-02-26T09:36:48.882601+00:00",
+  "git_commit": "737f88c80ad64aa1d08055ae7027cecaa4fe3a2c",
+  "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
+  "renderer": "eval/tools/gen_ir.cpp",
+  "base_config_id": "householder_prime_rt60_2p8_paper",
+  "scope": "all",
+  "mode_key": "full",
+  "mode_label": "Diff Householder (u+b+c)",
+  "fixed_u_source": "preset",
+  "fixed_u": [
+    0.5,
+    0.5,
+    0.5,
+    0.5
+  ],
+  "source_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_prime_rt60_2p8_paper.json",
+  "render_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_prime_rt60_2p8_paper_full.json",
+  "wav_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/ir/IR_householder_prime_rt60_2p8_paper_full.wav",
+  "config_id": "householder_prime_rt60_2p8_paper_full",
+  "sr": 48000,
+  "nfft": 2048,
+  "nfft_used": 535223,
+  "aligned_length_samples": 535223,
+  "delay_set": "prime",
+  "delay_samples": [
+    1499,
+    2377,
+    3217,
+    4421
+  ],
+  "rt60": 2.8,
+  "rt60_target": 2.8,
+  "gamma_used": 0.9999486043321197,
+  "gamma_source": "rt60_target",
+  "gains": [
+    0.9258490356932044,
+    0.8849973378134331,
+    0.8476019833822931,
+    0.7967406292535046
+  ],
+  "matrix_type": "householder",
+  "u": [
+    0.3625637827739432,
+    -0.09202018104314791,
+    -0.833748516952474,
+    0.4061319984696914
+  ],
+  "b": [
+    -0.0016959637255349162,
+    0.6384387518257459,
+    0.7271325180996031,
+    0.2523318945285267
+  ],
+  "cL": [
+    0.21160714455248936,
+    -0.26119909485700815,
+    0.372956392960941,
+    -0.8648126838626882
+  ],
+  "cR": [
+    0.8108050195609936,
+    0.26074586809419276,
+    -0.5053799633942984,
+    -0.1385565051741713
+  ],
+  "ir_seconds": 11.2,
+  "channel_used_for_analysis": "L",
+  "normalization_peak_common": 0.3101821541786194,
+  "diffusion_proxy_name": "short_time_excess_kurtosis_rmsnorm",
+  "diffusion_proxy_definition": "Per-frame excess kurtosis on RMS-normalized frames; windows below RMS threshold are ignored. Lower values indicate more Gaussian-like amplitude statistics and higher diffusion (proxy).",
+  "diffusion_proxy_window_ms": 20.0,
+  "diffusion_proxy_hop_ms": 5.0,
+  "diffusion_proxy_summary_window_s": [
+    0.05,
+    0.3
+  ],
+  "echo_density_proxy_name": "envelope_peak_event_rate",
+  "echo_density_proxy_definition": "Short-time RMS envelope peak/event rate with dynamic threshold and minimum peak spacing. Summary is mean events/s in the configured window.",
+  "echo_density_threshold_db": -30.0,
+  "echo_density_min_spacing_ms": 1.0,
+  "echo_density_window_ms": 10.0,
+  "echo_density_hop_ms": 5.0,
+  "echo_density_summary_window_s": [
+    0.05,
+    0.3
+  ],
+  "compare_lti_enforced": true,
+  "compare_mod_depth": 0.0,
+  "compare_detune": 0.0,
+  "compare_damp_hz": 1000000000.0
+}

@@ -1,0 +1,310 @@
+commit 88b7dfe48a873e383d9b45662b4571d9d14b11eb
+Author: fernandoAra <112726322+fernandoAra@users.noreply.github.com>
+Date:   Tue Feb 24 17:26:07 2026 +0530
+
+    fix(matrix): make morph authoritative and matrix type output-only
+
+diff --git a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
+index 14dd794..3242db5 100644
+--- a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
++++ b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.cpp
+@@ -100,10 +100,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
+     mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+ }
+ 
+-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.16"; }
++const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.17"; }
+ const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
+ const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
+-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,16,0); }
++uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,17,0); }
+ int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
+ 
+ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
+@@ -119,7 +119,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
+         break;
+     case paramMatrixType:
+         p.name = "MatrixType"; p.symbol = "matrix";
+-        p.hints |= kParameterIsInteger;
++        p.hints = kParameterIsOutput | kParameterIsInteger;
+         p.ranges = { 0.0f, 1.0f, float(fMatrixType) };
+         break;
+     case paramDelaySet:
+@@ -203,7 +203,7 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
+     switch (i) {
+     case paramRt60:         return fRt60;
+     case paramMix:          return fMix;
+-    case paramMatrixType:   return float(fMatrixType);
++    case paramMatrixType:   return (fMatrixMorph < 0.5f) ? 0.0f : 1.0f;
+     case paramDelaySet:     return float(fDelaySet);
+     case paramSize:         return fSize;
+     case paramDampHz:       return fDampHz;
+@@ -233,14 +233,8 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
+     case paramMix:
+         fMix = v;  /*no log*/ break;
+     case paramMatrixType: {
+-        const int old = fMatrixType;
+-        fMatrixType = int(std::round(v));
+-        fMatrixMorph = float(fMatrixType);
+-        fMatrixDiscreteLock = true;
+-        DBG("[PARAM] MatrixType=%d (%s) requested", fMatrixType, fMatrixType? "Householder":"Hadamard");
+-        if (fMatrixType != old) {
+-            // handled in run(): will reset safely and log
+-        }
++        (void)v;
++        DBG("[DSP] type set attempt ignored");
+         break;
+     }
+     case paramDelaySet: {
+@@ -258,20 +252,9 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
+         fDampHz = v; /*no log*/ break;
+     case paramMatrixMorph: {
+         const float vm = std::max(0.0f, std::min(1.0f, v));
+-        if (vm > 0.01f && vm < 0.99f) {
+-            // Any in-between value means the advanced morph slider is active.
+-            fMatrixDiscreteLock = false;
+-            fMatrixMorph = vm;
+-            fMatrixType = int(std::lround(vm));
+-        } else if (fMatrixDiscreteLock) {
+-            // While locked, keep the discrete endpoint selected by matrixType.
+-            fMatrixMorph = float(fMatrixType);
+-        } else {
+-            // Endpoint reached from advanced morph; snap and relock.
+-            fMatrixMorph = (vm >= 0.5f) ? 1.0f : 0.0f;
+-            fMatrixType = int(fMatrixMorph);
+-            fMatrixDiscreteLock = true;
+-        }
++        fMatrixMorph = vm;
++        fMatrixType = (vm < 0.5f) ? 0 : 1;
++        DBG("[DSP] morph=%.3f", double(fMatrixMorph));
+         break;
+     }
+     case paramPing:
+@@ -298,7 +281,6 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
+     if (i < kPresetCount) {
+         setParameterValue(paramRt60,         kPresets[i].params[paramRt60]);
+         setParameterValue(paramMix,          kPresets[i].params[paramMix]);
+-        setParameterValue(paramMatrixType,   kPresets[i].params[paramMatrixType]);
+         setParameterValue(paramDelaySet,     kPresets[i].params[paramDelaySet]);
+         setParameterValue(paramSize,         kPresets[i].params[paramSize]);
+         setParameterValue(paramDampHz,       kPresets[i].params[paramDampHz]);
+@@ -313,9 +295,8 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
+ void PluginTinyFdnReverb::activate() {
+     fAppliedSize        = fSize;
+     fAppliedDelaySet    = fDelaySet;
+-    fAppliedMatrixType  = fMatrixType;
++    fAppliedMatrixType  = (fMatrixMorph < 0.5f) ? 0 : 1;
+     fAppliedMetalBoost  = fMetalBoost;
+-    fMatrixDiscreteLock = true;
+ 
+     mMuteSamples      = 0;
+     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
+@@ -476,11 +457,14 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
+     }
+ 
+     // Apply size change (integer lengths)
++    const int currentMatrixType = (fMatrixMorph < 0.5f) ? 0 : 1;
++    fMatrixType = currentMatrixType;
++
+     if (std::fabs(fSize - fAppliedSize) > 1e-4f) {
+         fAppliedSize = fSize;
+         selectBaseAndUpdateDelays(sr);
+         resetStateForTopologyChange();
+-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
++        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
+     }
+ 
+     // Metallic Boost toggled?
+@@ -495,7 +479,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
+         }
+         selectBaseAndUpdateDelays(sr);
+         resetStateForTopologyChange();
+-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
++        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
+     }
+ 
+     // Delay set change?
+@@ -505,17 +489,17 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
+         fAppliedDelaySet = fDelaySet;
+         selectBaseAndUpdateDelays(sr);
+         resetStateForTopologyChange();
+-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
++        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
+     }
+ 
+     // Matrix change?
+-    if (fMatrixType != fAppliedMatrixType) {
++    if (currentMatrixType != fAppliedMatrixType) {
+         DBG("[RUN] MatrixType changed: %s -> %s",
+             fAppliedMatrixType? "Householder":"Hadamard",
+-            fMatrixType? "Householder":"Hadamard");
+-        fAppliedMatrixType = fMatrixType;
++            currentMatrixType? "Householder":"Hadamard");
++        fAppliedMatrixType = currentMatrixType;
+         resetStateForTopologyChange();
+-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
++        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
+     }
+ 
+     updateLineGainsFromRt60(sr);
+diff --git a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.hpp b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.hpp
+index 6100572..32c8397 100644
+--- a/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.hpp
++++ b/plugins/tiny-fdn-reverb/Plugintiny-fdn-reverb.hpp
+@@ -104,12 +104,11 @@ private:
+     float  fLastSR      = 48000.f;
+     float  fRt60        = 1.5f;
+     float  fMix         = 0.25f;
+-    int    fMatrixType  = 0;
++    int    fMatrixType  = 0; // derived indicator from fMatrixMorph
+     int    fDelaySet    = 0;
+     float  fSize        = 1.0f;
+     float  fDampHz      = 6000.f;
+     float  fMatrixMorph = 0.0f;
+-    bool   fMatrixDiscreteLock = true; // true: discrete matrixType owns morph endpoint
+     int    fPing        = 0;
+ 
+     // NEW interactive controls
+diff --git a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
+index b3e2719..8960a0c 100644
+--- a/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
++++ b/plugins/tiny-fdn-reverb/UItiny-fdn-reverb.cpp
+@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
+ START_NAMESPACE_DISTRHO
+ using namespace DGL; // nvg* symbols
+ 
+-static constexpr const char* kPluginVersionText = "v1.16";
++static constexpr const char* kPluginVersionText = "v1.17";
+ 
+ UITinyFdnReverb::UITinyFdnReverb()
+ : UI(1040, 520) // +40px for extra row
+@@ -242,9 +242,10 @@ void UITinyFdnReverb::parameterChanged(uint32_t index, float value) {
+     case PluginTinyFdnReverb::paramSize:         fSize   = value; break;
+     case PluginTinyFdnReverb::paramDampHz:       fDampHz = value; break;
+     case PluginTinyFdnReverb::paramMatrixMorph:
+-        fMorph  = value;
++        fMorph  = clampf(value, 0.f, 1.f);
+         if (fMorph <= 0.01f) fMatrixType = 0;
+         else if (fMorph >= 0.99f) fMatrixType = 1;
++        else fMatrixType = -1;
+         break;
+ 
+     case PluginTinyFdnReverb::paramModDepth:  fModDepth = value; break;
+@@ -478,10 +479,13 @@ void UITinyFdnReverb::onNanoDisplay()
+     beginPath(); rect(0, 0, getWidth(), getHeight()); fillColor(Color(250,250,250)); fill();
+     beginPath(); rect(0, 0, getWidth(), 28); fillColor(Color(245,245,245)); fill();
+     fontSize(16.f); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+-    text(12, 14, "Tiny FDN Reverb v1.16 — Dal Santo core", nullptr);
++    text(12, 14, "Tiny FDN Reverb v1.17 — Dal Santo core", nullptr);
+ 
+     // Layer 1 skeleton controls (always visible).
+     const int layerMode = (fMorph >= 0.5f ? 1 : 0);
++    const char* matrixDisplay = (fMorph <= 0.01f)
++        ? "Hadamard"
++        : ((fMorph >= 0.99f) ? "Householder" : "Morphing");
+     drawToggle(rLayerMatrix, "Layer 1 Matrix", "Hadamard", "House", layerMode);
+     drawPanel(this, rAdvancedBtn.x, rAdvancedBtn.y, rAdvancedBtn.w, rAdvancedBtn.h, 4, 235,235,235);
+     beginPath();
+@@ -512,13 +516,13 @@ void UITinyFdnReverb::onNanoDisplay()
+     {
+         char diag[128];
+         std::snprintf(diag, sizeof(diag), "Matrix monitor: dsp=%s (morph=%.2f), param=%s",
+-                      (layerMode == 0 ? "Hadamard" : "Householder"),
++                      matrixDisplay,
+                       fMorph,
+-                      (fMatrixType == 0 ? "Hadamard" : "Householder"));
+-        fontSize(11.f);
++                      (fMatrixType < 0 ? "Morphing" : (fMatrixType == 0 ? "Hadamard" : "Householder")));
++        fontSize(13.f);
+         fillColor(Color(65,65,65));
+         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+-        text(16.f, 34.f, diag, nullptr);
++        text(16.f, 36.f, diag, nullptr);
+     }
+ 
+     Rect traceRect = rDecay;
+@@ -558,7 +562,7 @@ void UITinyFdnReverb::onNanoDisplay()
+         text(rPing.x + rPing.w*0.5f, rPing.y + rPing.h*0.5f, "Ping", nullptr);
+ 
+         // toggles + sliders (left column)
+-        drawToggle(rMatrix, "Matrix", "Hadamard", "House", fMatrixType);
++        drawToggle(rMatrix, "Matrix", "Hadamard", "House", layerMode);
+         drawToggle(rDelay,  "Delay",  "Prime",    "Spread", fDelaySet);
+ 
+         // Metallic Boost (single toggle row)
+@@ -598,8 +602,8 @@ void UITinyFdnReverb::onNanoDisplay()
+         float Ho[4][4];
+         for(int i=0;i<4;++i) for(int j=0;j<4;++j) Ho[i][j] = (i==j)?0.5f:-0.5f;
+ 
+-        const bool actH  = (fMatrixType==0 && fMorph < 0.5f);
+-        const bool actHo = (fMatrixType==1 ||  fMorph >= 0.5f);
++        const bool actH  = (fMorph <= 0.5f);
++        const bool actHo = (fMorph >= 0.5f);
+         drawMatrixTile(this, rMatH,  "Matrix: Hadamard (signed sums)", Hm, actH);
+         drawMatrixTile(this, rMatHo, "Matrix: Householder (reflection)", Ho, actHo);
+ 
+@@ -609,7 +613,7 @@ void UITinyFdnReverb::onNanoDisplay()
+         // captions under toggles
+         fontSize(12.f); fillColor(Color(60,60,60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+         char line[64];
+-        std::snprintf(line, sizeof(line), "Matrix: %s", fMatrixType ? "Householder" : "Hadamard");
++        std::snprintf(line, sizeof(line), "Matrix: %s", matrixDisplay);
+         text(rMatrix.x, rMatrix.y + rMatrix.h + 12.f, line, nullptr);
+         std::snprintf(line, sizeof(line), "Delay set: %s", fDelaySet ? "Spread" : "Prime");
+         text(rDelay.x,  rDelay.y  + rDelay.h  + 12.f, line, nullptr);
+@@ -660,14 +664,10 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+ 
+         if (pointIn(rLayerMatrix, x, y)) {
+             const float half = rLayerMatrix.w*0.5f;
+-            fMatrixType = (x < rLayerMatrix.x+half) ? 0 : 1;
+-            beginEdit(PluginTinyFdnReverb::paramMatrixType);
+-            setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
+-            endEdit(PluginTinyFdnReverb::paramMatrixType);
+-
+-            // Keep Layer 1 mode in sync with the actual DSP blend selector.
+-            const float snap = fMatrixType ? 1.0f : 0.0f;
++            const float snap = (x < rLayerMatrix.x+half) ? 0.0f : 1.0f;
+             fMorph = snap;
++            fMatrixType = int(std::lround(snap));
++            DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
+             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+             endEdit(PluginTinyFdnReverb::paramMatrixMorph);
+@@ -704,16 +704,10 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+         // toggles
+         if (pointIn(rMatrix, x, y)) {
+             const float half = rMatrix.w*0.5f;
+-            fMatrixType = (x < rMatrix.x+half) ? 0 : 1;
+-
+-            beginEdit(PluginTinyFdnReverb::paramMatrixType);
+-            setParam(PluginTinyFdnReverb::paramMatrixType, float(fMatrixType));
+-            endEdit(PluginTinyFdnReverb::paramMatrixType);
+-            DBG("[UI] Matrix toggle → %d", fMatrixType);
+-
+-            // Snap Morph to match (0=Hadamard, 1=Householder)
+-            const float snap = fMatrixType ? 1.0f : 0.0f;
++            const float snap = (x < rMatrix.x+half) ? 0.0f : 1.0f;
+             fMorph = snap;
++            fMatrixType = int(std::lround(snap));
++            DBG("[UI] set morph=%d", snap >= 0.5f ? 1 : 0);
+             beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+             setParam(PluginTinyFdnReverb::paramMatrixMorph, snap);
+             endEdit(PluginTinyFdnReverb::paramMatrixMorph);
+@@ -745,14 +739,12 @@ bool UITinyFdnReverb::onMouse(const MouseEvent& ev) {
+             if (s >= 0 && s < 4) {
+                 const int m = (s < 2) ? 0 : 1;
+                 const int d = (s % 2 == 0) ? 0 : 1;
+-                beginEdit(PluginTinyFdnReverb::paramMatrixType);
+-                setParam(PluginTinyFdnReverb::paramMatrixType, float(m));
+-                endEdit(PluginTinyFdnReverb::paramMatrixType);
+                 beginEdit(PluginTinyFdnReverb::paramDelaySet);
+                 setParam(PluginTinyFdnReverb::paramDelaySet, float(d));
+                 endEdit(PluginTinyFdnReverb::paramDelaySet);
+-                DBG("[UI] Preset click → Matrix=%d Delay=%d", m, d);
+-                // Snap Morph to match (0=Hadamard, 1=Householder)
++                fMorph = float(m);
++                fMatrixType = m;
++                DBG("[UI] set morph=%d", m);
+                 beginEdit(PluginTinyFdnReverb::paramMatrixMorph);
+                 setParam(PluginTinyFdnReverb::paramMatrixMorph, float(m));
+                 endEdit(PluginTinyFdnReverb::paramMatrixMorph);

@@ -40,6 +40,7 @@ private:
     float fMix  = 1.0f;
     int   fMatrixType = 0; // 0 Hadamard, 1 Householder
     int   fHouseholderMode = 0; // 0 fixed, 1 diff
+    int   fDiffRoutingMode = 0; // 0 fixed baseline, 1 diff u-only, 2 diff full
     int   fDelaySet   = 0; // 0 Prime,    1 Spread
     float fSize    = 1.0f;
     float fDampHz  = 6000.0f;
@@ -55,6 +56,10 @@ private:
     float fEDTms = 0.f, fRT60est = 0.f, fDen100 = 0.f, fDen300 = 0.f;
     float fRinginess = 0.f;
     float fWetEnv = 0.f;
+    float fActiveB0 = 0.25f;
+    float fActiveB1 = 0.25f;
+    float fActiveCL0 = 0.5f;
+    float fActiveCL1 = -0.5f;
 
     // Layering: default view + advanced panel
     bool  fShowAdvanced = false;

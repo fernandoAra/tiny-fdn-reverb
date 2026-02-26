@@ -1,4 +1,11 @@
-"""Householder helpers for tiny DiffFDN experiments."""
+"""Householder helpers for tiny DiffFDN experiments.
+
+SOURCE:
+- flamo HouseholderMatrix reference (Dal Santo et al.):
+  https://github.com/gdalsanto/flamo/blob/4c8097d4feda76132691bb2a3e465ebcba11dcea/flamo/processor/dsp.py#L621-L725
+- This file keeps a minimal local adaptation for tiny N=4 experiments:
+  raw v -> unit u, then apply y = x - 2*u*(u^T x).
+"""
 
 from __future__ import annotations
 

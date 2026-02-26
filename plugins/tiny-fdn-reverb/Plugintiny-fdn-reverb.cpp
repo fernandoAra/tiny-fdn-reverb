@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <chrono>
 
 // Boilerplate: very lightweight logger to /tmp/tfdn.log
 // (generic helper, not core DSP logic)
@@ -60,6 +61,12 @@ static const Preset kPresets[] = {
 
 static const uint32_t kPresetCount = sizeof(kPresets)/sizeof(kPresets[0]);
 static const uint32_t kStateCount = 1;
+
+static inline uint64_t monotonicMsNow() noexcept
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
 
 static inline void dump_state_lengths(const char* tag,
                                       int matrixType, int delaySet,
@@ -114,10 +121,10 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
     mUiHouseholderSeqAck.store(0u, std::memory_order_relaxed);
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.22"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.25"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,22,0); }
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,25,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -209,7 +216,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.name  = "Wet Env"; p.symbol = "wetenv";
         p.ranges= {0.f, 1.f, 0.f}; break;
     case paramHouseholderMode:
-        p.hints = kParameterIsAutomable | kParameterIsInteger;
+        p.hints = kParameterIsInteger | kParameterIsBoolean;
         p.name  = "Householder Mode"; p.symbol = "housemode";
         p.ranges= {0.f, 1.f, float(fHouseholderMode)}; break;
 
@@ -285,13 +292,31 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramExciteNoise:
         fExciteNoise = (v >= 0.5f); DBG("[PARAM] NoiseBurst=%d", fExciteNoise); break;
     case paramHouseholderMode:
-        fHouseholderMode = (v >= 0.5f) ? 1 : 0;
         {
+            const int requestedMode = (v >= 0.5f) ? 1 : 0;
             const uint32_t uiSeq = mUiHouseholderSeq.load(std::memory_order_acquire);
             const uint32_t uiAck = mUiHouseholderSeqAck.load(std::memory_order_relaxed);
             const bool fromUi = (uiSeq != 0u && uiSeq != uiAck);
-            if (fromUi)
+            if (fromUi) {
                 mUiHouseholderSeqAck.store(uiSeq, std::memory_order_relaxed);
+                mHouseholderTouchedByUI.store(true, std::memory_order_release);
+            } else {
+                const bool touchedByUi = mHouseholderTouchedByUI.load(std::memory_order_acquire);
+                if (touchedByUi && requestedMode != fHouseholderMode) {
+                    const uint64_t nowMs = monotonicMsNow();
+                    uint64_t lastMs = mHouseholderIgnoreLogMs.load(std::memory_order_relaxed);
+                    if (nowMs >= lastMs + 1000u &&
+                        mHouseholderIgnoreLogMs.compare_exchange_strong(
+                            lastMs, nowMs, std::memory_order_relaxed)) {
+                        std::fprintf(stderr,
+                                     "[DSP] ignored host HouseholderMode=%d after UI ownership (current=%d)\n",
+                                     requestedMode, fHouseholderMode);
+                    }
+                    break;
+                }
+            }
+
+            fHouseholderMode = requestedMode;
             std::fprintf(stderr, "[DSP] recv HouseholderMode=%d (%s) origin=%s seq=%u\n",
                          fHouseholderMode,
                          fHouseholderMode ? "Diff" : "Fixed",
@@ -365,6 +390,7 @@ void PluginTinyFdnReverb::activate() {
     fAppliedMatrixType  = (fMatrixMorph < 0.5f) ? 0 : 1;
     fAppliedMetalBoost  = fMetalBoost;
     fAppliedHouseholderMode = fHouseholderMode;
+    fAppliedDiffRoutingMode = -1;
 
     mMuteSamples      = 0;
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
@@ -373,6 +399,14 @@ void PluginTinyFdnReverb::activate() {
     mWetEnv = 0.f;
     mHouseholderUActive = mHouseholderUFixed;
     mHouseholderUDiff = mHouseholderUFixed;
+    mInjectionBDiff = mInjectionBFixed;
+    mOutputCLDiff = mOutputCLFixed;
+    mOutputCRDiff = mOutputCRFixed;
+    mInjectionBActive = mInjectionBFixed;
+    mOutputCLActive = mOutputCLFixed;
+    mOutputCRActive = mOutputCRFixed;
+    mDiffPresetHasFullIo = false;
+    mDiffRoutingMode = 0;
     mActiveDiffPreset = nullptr;
 
     for (int k=0; k<kN; ++k) {
@@ -465,6 +499,26 @@ void PluginTinyFdnReverb::normalizeHouseholderU(std::array<float, kN>& u) noexce
         u[i] = float(u[i] / norm);
 }
 
+bool PluginTinyFdnReverb::isFiniteVector(const std::array<float, kN>& v) noexcept
+{
+    for (int i = 0; i < kN; ++i) {
+        if (!std::isfinite(v[i]))
+            return false;
+    }
+    return true;
+}
+
+float PluginTinyFdnReverb::maxAbsDiff(const std::array<float, kN>& a, const std::array<float, kN>& b) noexcept
+{
+    float m = 0.f;
+    for (int i = 0; i < kN; ++i) {
+        const float d = std::fabs(a[i] - b[i]);
+        if (d > m)
+            m = d;
+    }
+    return m;
+}
+
 void PluginTinyFdnReverb::updateDiffPresetForContext(double sr) noexcept
 {
     const int srInt = int(std::lround(sr));
@@ -479,16 +533,36 @@ void PluginTinyFdnReverb::updateDiffPresetForContext(double sr) noexcept
     mActiveDiffPreset = preset;
     if (mActiveDiffPreset == nullptr) {
         mHouseholderUDiff = mHouseholderUFixed;
+        mInjectionBDiff = mInjectionBFixed;
+        mOutputCLDiff = mOutputCLFixed;
+        mOutputCRDiff = mOutputCRFixed;
+        mDiffPresetHasFullIo = false;
         DBG("[DIFF] no preset match for sr=%d delaySet=%d rt60=%.3f -> fallback fixed u",
             srInt, fDelaySet, double(fRt60));
         return;
     }
 
-    for (int i = 0; i < kN; ++i)
+    for (int i = 0; i < kN; ++i) {
         mHouseholderUDiff[i] = mActiveDiffPreset->u_unit[i];
+        mInjectionBDiff[i] = mActiveDiffPreset->b[i];
+        mOutputCLDiff[i] = mActiveDiffPreset->cL[i];
+        mOutputCRDiff[i] = mActiveDiffPreset->cR[i];
+    }
     normalizeHouseholderU(mHouseholderUDiff);
+    if (!isFiniteVector(mInjectionBDiff) || !isFiniteVector(mOutputCLDiff) || !isFiniteVector(mOutputCRDiff)) {
+        mInjectionBDiff = mInjectionBFixed;
+        mOutputCLDiff = mOutputCLFixed;
+        mOutputCRDiff = mOutputCRFixed;
+        mDiffPresetHasFullIo = false;
+    } else {
+        const float eps = 1e-5f;
+        mDiffPresetHasFullIo =
+            (maxAbsDiff(mInjectionBDiff, mInjectionBFixed) > eps) ||
+            (maxAbsDiff(mOutputCLDiff, mOutputCLFixed) > eps) ||
+            (maxAbsDiff(mOutputCRDiff, mOutputCRFixed) > eps);
+    }
 
-    DBG("[DIFF] preset=%s sr=%d delay=%s rt60=%.3f u=[%.6f %.6f %.6f %.6f]",
+    DBG("[DIFF] preset=%s sr=%d delay=%s rt60=%.3f u=[%.6f %.6f %.6f %.6f] io=%s b0=%.5f b1=%.5f cL0=%.5f cL1=%.5f",
         mActiveDiffPreset->configId,
         mActiveDiffPreset->sr,
         mActiveDiffPreset->delaySetName,
@@ -496,14 +570,24 @@ void PluginTinyFdnReverb::updateDiffPresetForContext(double sr) noexcept
         double(mHouseholderUDiff[0]),
         double(mHouseholderUDiff[1]),
         double(mHouseholderUDiff[2]),
-        double(mHouseholderUDiff[3]));
+        double(mHouseholderUDiff[3]),
+        mDiffPresetHasFullIo ? "full" : "u-only",
+        double(mInjectionBDiff[0]),
+        double(mInjectionBDiff[1]),
+        double(mOutputCLDiff[0]),
+        double(mOutputCLDiff[1]));
 }
 
 void PluginTinyFdnReverb::updateActiveHouseholderU() noexcept
 {
-    const bool useDiff = (fHouseholderMode != 0) && (mActiveDiffPreset != nullptr);
-    const std::array<float, kN>& src = useDiff ? mHouseholderUDiff : mHouseholderUFixed;
-    mHouseholderUActive = src;
+    const bool diffRequested = (fHouseholderMode != 0) && (mActiveDiffPreset != nullptr);
+    const bool useDiffIo = diffRequested && mDiffPresetHasFullIo;
+
+    mHouseholderUActive = diffRequested ? mHouseholderUDiff : mHouseholderUFixed;
+    mInjectionBActive = useDiffIo ? mInjectionBDiff : mInjectionBFixed;
+    mOutputCLActive = useDiffIo ? mOutputCLDiff : mOutputCLFixed;
+    mOutputCRActive = useDiffIo ? mOutputCRDiff : mOutputCRFixed;
+    mDiffRoutingMode = !diffRequested ? 0 : (useDiffIo ? 2 : 1);
 }
 
 inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN]) const noexcept {
@@ -516,6 +600,10 @@ inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN])
 
 inline void PluginTinyFdnReverb::householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept
 {
+    // SOURCE: flamo HouseholderMatrix concept (Dal Santo et al.), commit:
+    // https://github.com/gdalsanto/flamo/blob/4c8097d4feda76132691bb2a3e465ebcba11dcea/flamo/processor/dsp.py#L621-L725
+    // Adapted for this plugin's fixed N=4 realtime path:
+    // y = x - 2*u*(u^T*x) without explicitly forming U = I - 2uu^T.
     float dot = 0.f;
     for (int i = 0; i < kN; ++i)
         dot += in[i] * u[i];
@@ -642,6 +730,22 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
     updateDiffPresetForContext(sr);
     updateActiveHouseholderU();
 
+    if (mDiffRoutingMode != fAppliedDiffRoutingMode) {
+        const char* route =
+            (mDiffRoutingMode == 0) ? "Fixed baseline"
+            : ((mDiffRoutingMode == 1) ? "Diff u-only" : "Diff full (u+b+c)");
+#if !defined(TFDN_ENABLE_LOG)
+        (void)route;
+#endif
+        DBG("[RUN] Diff routing -> %s | b=[%.5f %.5f ...] cL=[%.5f %.5f ...]",
+            route,
+            double(mInjectionBActive[0]),
+            double(mInjectionBActive[1]),
+            double(mOutputCLActive[0]),
+            double(mOutputCLActive[1]));
+        fAppliedDiffRoutingMode = mDiffRoutingMode;
+    }
+
     // Matrix change?
     if (currentMatrixType != fAppliedMatrixType) {
         DBG("[RUN] MatrixType changed: %s -> %s",
@@ -744,22 +848,31 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         }
 
         // --- injection (ping or noise burst or input mono) ---
-        float inj = 0.25f * (0.5f*(inL[i] + inR[i]));
+        const float monoIn = 0.5f * (inL[i] + inR[i]);
+        float excitationScalar = monoIn;
         if (mNoiseBurstLeft > 0) {
-            inj = nextNoise(); --mNoiseBurstLeft;
+            excitationScalar = nextNoise();
+            --mNoiseBurstLeft;
         } else if (pingAtBlock && i == 0) {
-            inj = 1.0f;
+            excitationScalar = 1.0f;
         }
 
         // write and advance
         for (int k=0; k<kN; ++k) {
+            // Always inject through active b-vector (fixed/u-only/full differ by selection only).
+            const float inj = mInjectionBActive[k] * excitationScalar;
             mBuf[k][ mIdx[k] ] = yDamped[k] + inj;
             int idx = mIdx[k] + 1; if (idx >= mLen[k]) idx = 0;
             mIdx[k] = idx;
         }
 
-        float wetL = 0.5f*(+yMod[0] - yMod[1] + yMod[2] - yMod[3]);
-        float wetR = 0.5f*(+yMod[0] + yMod[1] - yMod[2] - yMod[3]);
+        float wetL = 0.0f;
+        float wetR = 0.0f;
+        // Always mix through active c-vectors (fixed/u-only/full differ by selection only).
+        for (int k = 0; k < kN; ++k) {
+            wetL += mOutputCLActive[k] * yMod[k];
+            wetR += mOutputCRActive[k] * yMod[k];
+        }
 
         float wetGain = 1.0f;
         if (mMuteSamples > 0) { wetGain = 0.0f; --mMuteSamples; }
@@ -904,6 +1017,13 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
             double(fModDepth),
             double(mRinginess),
             mLen[0], mLen[1], mLen[2], mLen[3]);
+
+        DBG("[RUNDBG] diffRoute=%d b0=%.5f b1=%.5f cL0=%.5f cL1=%.5f",
+            mDiffRoutingMode,
+            double(mInjectionBActive[0]),
+            double(mInjectionBActive[1]),
+            double(mOutputCLActive[0]),
+            double(mOutputCLActive[1]));
 
         mSamplesSincePush = 0;
     }
