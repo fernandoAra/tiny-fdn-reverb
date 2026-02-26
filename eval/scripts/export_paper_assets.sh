@@ -11,7 +11,10 @@ FIG_DIR="${ROOT_DIR}/eval/figs"
 PAPER_DIR="${ROOT_DIR}/paper_assets"
 PAPER_FIG_DIR="${PAPER_DIR}/figures"
 PAPER_TAB_DIR="${PAPER_DIR}/tables"
+PAPER_FIG_MS_DIR="${PAPER_DIR}/figures_multiseed"
+PAPER_TAB_MS_DIR="${PAPER_DIR}/tables_multiseed"
 SELECTED_SLUG="${1:-}"
+MULTISEED_CONFIG="${2:-}"
 
 mkdir -p "${PAPER_FIG_DIR}" "${PAPER_TAB_DIR}"
 
@@ -51,6 +54,22 @@ if [[ -n "${SELECTED_SLUG}" ]]; then
     "${PAPER_FIG_DIR}/fig_metrics_fixed_vs_diff_${SELECTED_SLUG}.png"
 fi
 
+if [[ -n "${MULTISEED_CONFIG}" ]]; then
+  MULTI_DIR="${FIG_DIR}/multiseed/${MULTISEED_CONFIG}"
+  MULTI_PAPER_DIR="${MULTI_DIR}/paper"
+  mkdir -p "${PAPER_FIG_MS_DIR}" "${PAPER_TAB_MS_DIR}"
+  copy_required "${MULTI_PAPER_DIR}/multiseed_metrics_errorbars.png" \
+    "${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
+  copy_required "${MULTI_PAPER_DIR}/multiseed_diffusion_meanstd.png" \
+    "${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
+  copy_required "${MULTI_PAPER_DIR}/multiseed_echo_density_meanstd.png" \
+    "${PAPER_FIG_MS_DIR}/fig_multiseed_echo_density_${MULTISEED_CONFIG}.png"
+  copy_required "${MULTI_DIR}/aggregate_summary.csv" \
+    "${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
+  copy_required "${MULTI_DIR}/aggregate_stats.json" \
+    "${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
+fi
+
 echo "Exported paper assets:"
 echo "  ${PAPER_FIG_DIR}/fig_mag_fixed_vs_diff.png"
 echo "  ${PAPER_FIG_DIR}/fig_irfft_fixed_vs_diff.png"
@@ -62,4 +81,11 @@ if [[ -n "${SELECTED_SLUG}" ]]; then
   echo "  ${PAPER_FIG_DIR}/fig_irfft_fixed_vs_diff_${SELECTED_SLUG}.png"
   echo "  ${PAPER_FIG_DIR}/fig_diffusion_fixed_vs_diff_${SELECTED_SLUG}.png"
   echo "  ${PAPER_FIG_DIR}/fig_metrics_fixed_vs_diff_${SELECTED_SLUG}.png"
+fi
+if [[ -n "${MULTISEED_CONFIG}" ]]; then
+  echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
+  echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
+  echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_echo_density_${MULTISEED_CONFIG}.png"
+  echo "  ${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
+  echo "  ${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
 fi
