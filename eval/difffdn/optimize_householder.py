@@ -127,7 +127,12 @@ def main() -> None:
     )
     parser.add_argument("--alpha-sparsity", type=float, default=0.05)
     parser.add_argument("--alpha-density", type=float, default=None, help="Deprecated alias for --alpha-sparsity")
-    parser.add_argument("--spectral-mode", choices=["unity", "mean"], default="unity")
+    parser.add_argument(
+        "--spectral-mode",
+        choices=["unity", "mean"],
+        default="unity",
+        help="Spectral objective mode (recommended default for paper alignment: unity).",
+    )
     parser.add_argument(
         "--train-lossless",
         action=argparse.BooleanOptionalAction,
@@ -172,7 +177,7 @@ def main() -> None:
     print(
         f"[Config] fs={fs:.1f} rt60_target={float(args.rt60):.4f}s "
         f"gamma_used={gamma_used:.9f} gamma_train={gamma_train:.9f} "
-        f"mode={training_mode} steps={total_steps} "
+        f"mode={training_mode} spectral_mode={args.spectral_mode} steps={total_steps} "
         f"(epochs={epochs}, steps_per_epoch={steps_per_epoch}, batch={batch}, M={M})"
     )
 

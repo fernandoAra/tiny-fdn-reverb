@@ -47,6 +47,12 @@ MODE_COLORS = {
     "full": "tab:green",
 }
 
+PLOT_TITLE_FONTSIZE = 15
+PLOT_LABEL_FONTSIZE = 12
+PLOT_LEGEND_FONTSIZE = 10
+PLOT_LINEWIDTH_MAIN = 1.8
+PLOT_LINEWIDTH_AUX = 1.1
+
 SUMMARY_FIELDS = [
     "timestamp",
     "config_id",
@@ -67,6 +73,7 @@ SUMMARY_FIELDS = [
     "edt_s",
     "ringiness",
     "kurtosis_mean_50_300ms",
+    "echo_density_events_per_s_50_300ms",
     "sanity_max_db_error",
 ]
 
@@ -96,6 +103,9 @@ class ScenarioResult:
     kurt_t: np.ndarray
     kurtosis_curve: np.ndarray
     kurtosis_mean_50_300ms: float
+    echo_density_t: np.ndarray
+    echo_density_curve: np.ndarray
+    echo_density_events_per_s_50_300ms: float
     sanity_max_db_error: float
 
 
@@ -477,6 +487,77 @@ def _short_time_excess_kurtosis(
     return np.asarray(times, dtype=np.float64), np.asarray(kurtosis, dtype=np.float64)
 
 
+def _short_time_rms_envelope(
+    x: np.ndarray,
+    sr: int,
+    *,
+    win_ms: float,
+    hop_ms: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    win = max(8, int(float(sr) * win_ms * 0.001))
+    hop = max(1, int(float(sr) * hop_ms * 0.001))
+    if x.size < win:
+        return np.zeros(1, dtype=np.float64), np.zeros(1, dtype=np.float64)
+
+    times: List[float] = []
+    env: List[float] = []
+    for start in range(0, x.size - win + 1, hop):
+        frame = x[start : start + win]
+        frame_rms = float(np.sqrt(np.mean(frame * frame) + EPS))
+        times.append((start + 0.5 * win) / float(sr))
+        env.append(frame_rms)
+    return np.asarray(times, dtype=np.float64), np.asarray(env, dtype=np.float64)
+
+
+def _echo_density_curve(
+    x: np.ndarray,
+    sr: int,
+    *,
+    threshold_db: float,
+    min_spacing_ms: float,
+    window_ms: float,
+    hop_ms: float,
+    tmin: float,
+    tmax: float,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    t_env, env = _short_time_rms_envelope(x, sr, win_ms=window_ms, hop_ms=hop_ms)
+    if env.size == 0:
+        return t_env, np.zeros_like(t_env), math.nan
+
+    thr = float(np.max(env) * (10.0 ** (float(threshold_db) / 20.0)))
+    min_spacing_s = max(float(min_spacing_ms), 0.0) * 1e-3
+    half_win_s = 0.5 * max(float(window_ms), 1e-3) * 1e-3
+    win_s = max(float(window_ms), 1e-3) * 1e-3
+
+    peak_times: List[float] = []
+    last_peak_t = -1e12
+    if env.size >= 3:
+        for i in range(1, env.size - 1):
+            if env[i] < thr:
+                continue
+            if env[i] < env[i - 1] or env[i] < env[i + 1]:
+                continue
+            ti = float(t_env[i])
+            if (ti - last_peak_t) < min_spacing_s:
+                continue
+            peak_times.append(ti)
+            last_peak_t = ti
+    elif env.size >= 1 and env[0] >= thr:
+        peak_times.append(float(t_env[0]))
+
+    curve = np.zeros_like(t_env)
+    if peak_times:
+        peaks = np.asarray(peak_times, dtype=np.float64)
+        for i, ti in enumerate(t_env):
+            lo = float(ti) - half_win_s
+            hi = float(ti) + half_win_s
+            count = np.count_nonzero((peaks >= lo) & (peaks <= hi))
+            curve[i] = float(count) / win_s
+
+    summary = _mean_in_window(t_env, curve, tmin, tmax)
+    return t_env, curve, float(summary)
+
+
 def _mean_in_window(t: np.ndarray, y: np.ndarray, t0: float, t1: float) -> float:
     mask = (t >= t0) & (t <= t1)
     if not np.any(mask):
@@ -553,70 +634,110 @@ def _plot_overlay_with_delta(
     db_by_mode: Dict[str, np.ndarray],
     smooth_bins: int,
     y_axis_label: str,
+    max_freq_hz: float,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     smoothed: Dict[str, np.ndarray] = {
         k: _moving_average(v, smooth_bins) for k, v in db_by_mode.items()
     }
+    freq_mask = freqs <= float(max_freq_hz)
+    if not np.any(freq_mask):
+        freq_mask = np.ones_like(freqs, dtype=bool)
+    freqs_plot = freqs[freq_mask]
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
-    fig.suptitle(title, fontsize=13)
+    fig, axes = plt.subplots(3, 1, figsize=(12.5, 10.0), sharex=True)
+    fig.suptitle(title, fontsize=PLOT_TITLE_FONTSIZE)
 
     for mode_key in MODE_ORDER:
         if mode_key not in db_by_mode:
             continue
         axes[0].plot(
-            freqs,
-            db_by_mode[mode_key],
-            label=f"{MODE_LABELS[mode_key]} (raw)",
-            lw=1.2,
+            freqs_plot,
+            db_by_mode[mode_key][freq_mask],
+            label=MODE_LABELS[mode_key],
+            lw=PLOT_LINEWIDTH_AUX,
             color=MODE_COLORS[mode_key],
         )
-    axes[0].axhline(0.0, color="0.5", lw=0.8, ls="--", label="0 dB = mean magnitude")
-    axes[0].set_ylabel(y_axis_label)
-    axes[0].set_title("Raw overlay")
+    axes[0].axhline(0.0, color="0.5", lw=0.9, ls="--")
+    axes[0].set_ylabel(y_axis_label, fontsize=PLOT_LABEL_FONTSIZE)
+    axes[0].set_title("Raw overlay", fontsize=PLOT_LABEL_FONTSIZE)
     axes[0].grid(alpha=0.25)
-    axes[0].legend(fontsize=8)
+    axes[0].legend(fontsize=PLOT_LEGEND_FONTSIZE)
+    axes[0].tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
 
     for mode_key in MODE_ORDER:
         if mode_key not in smoothed:
             continue
         axes[1].plot(
-            freqs,
-            smoothed[mode_key],
-            label=f"{MODE_LABELS[mode_key]} (smoothed {smooth_bins} bins)",
-            lw=1.4,
+            freqs_plot,
+            smoothed[mode_key][freq_mask],
+            label=MODE_LABELS[mode_key],
+            lw=PLOT_LINEWIDTH_MAIN,
             color=MODE_COLORS[mode_key],
         )
-    axes[1].axhline(0.0, color="0.5", lw=0.8, ls="--", label="0 dB = mean magnitude")
-    axes[1].set_ylabel(y_axis_label)
-    axes[1].set_title("Smoothed overlay")
+    axes[1].axhline(0.0, color="0.5", lw=0.9, ls="--", label="0 dB = mean magnitude")
+    axes[1].set_ylabel(y_axis_label, fontsize=PLOT_LABEL_FONTSIZE)
+    axes[1].set_title("Smoothed overlay", fontsize=PLOT_LABEL_FONTSIZE)
     axes[1].grid(alpha=0.25)
-    axes[1].legend(fontsize=8)
+    axes[1].legend(fontsize=PLOT_LEGEND_FONTSIZE)
+    axes[1].tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
 
     fixed_key = "fixed"
+    delta_summary: List[str] = []
     for mode_key in MODE_ORDER:
         if mode_key == fixed_key or mode_key not in smoothed:
             continue
         if fixed_key not in smoothed:
             continue
         delta = smoothed[mode_key] - smoothed[fixed_key]
+        delta_band = delta[freq_mask]
+        mean_abs = float(np.mean(np.abs(delta_band)))
+        max_abs = float(np.max(np.abs(delta_band)))
+        delta_summary.append(f"{mode_key}: mean|Δ|={mean_abs:.2f} dB, max|Δ|={max_abs:.2f} dB")
         axes[2].plot(
-            freqs,
-            delta,
-            lw=1.3,
+            freqs_plot,
+            delta_band,
+            lw=PLOT_LINEWIDTH_MAIN,
             color=MODE_COLORS[mode_key],
             label=f"{MODE_LABELS[mode_key]} - {MODE_LABELS[fixed_key]} (dB)",
         )
-    axes[2].axhline(0.0, color="0.5", lw=0.8, ls="--")
-    axes[2].set_xlabel("Frequency (Hz)")
-    axes[2].set_ylabel("Delta (dB)")
-    axes[2].set_title("Delta vs fixed baseline")
+    axes[2].axhline(0.0, color="0.5", lw=0.9, ls="--")
+    axes[2].set_xlabel("Frequency (Hz)", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[2].set_ylabel("Delta (dB)", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[2].set_title("Delta vs fixed baseline", fontsize=PLOT_LABEL_FONTSIZE)
     axes[2].grid(alpha=0.25)
+    if delta_summary:
+        axes[2].text(
+            0.01,
+            0.98,
+            "\n".join(delta_summary),
+            transform=axes[2].transAxes,
+            va="top",
+            ha="left",
+            fontsize=PLOT_LEGEND_FONTSIZE,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="0.7"),
+        )
     handles, labels = axes[2].get_legend_handles_labels()
     if handles:
-        axes[2].legend(fontsize=8)
+        axes[2].legend(fontsize=PLOT_LEGEND_FONTSIZE)
+    axes[2].tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
+    axes[2].set_xlim(float(freqs_plot[0]), float(freqs_plot[-1]))
+
+    # Keep frequency-axis y-range consistent across modes for readability.
+    y_candidates = []
+    for mode_key in db_by_mode:
+        y_candidates.append(db_by_mode[mode_key][freq_mask])
+        y_candidates.append(smoothed[mode_key][freq_mask])
+    if y_candidates:
+        y_all = np.concatenate(y_candidates)
+        y_all = y_all[np.isfinite(y_all)]
+        if y_all.size > 0:
+            y_min = float(np.percentile(y_all, 2))
+            y_max = float(np.percentile(y_all, 98))
+            pad = 0.1 * max(1e-6, y_max - y_min)
+            axes[0].set_ylim(y_min - pad, y_max + pad)
+            axes[1].set_ylim(y_min - pad, y_max + pad)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
@@ -629,31 +750,70 @@ def _plot_diffusion_curve(
     config_id: str,
     results: Dict[str, ScenarioResult],
     rms_threshold_db: float,
+    echo_tmin: float,
+    echo_tmax: float,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(11, 4.8))
-    ax.set_title(
-        f"Diffusion proxy: short-time excess kurtosis ({config_id}, RMS>{rms_threshold_db:.0f} dBFS)"
+    fig, axes = plt.subplots(2, 1, figsize=(12.5, 8.0), sharex=True)
+    fig.suptitle(
+        f"Diffusion / echo-density proxies ({config_id}, RMS>{rms_threshold_db:.0f} dBFS)",
+        fontsize=PLOT_TITLE_FONTSIZE,
     )
+    ax_k = axes[0]
+    ax_e = axes[1]
 
-    ax.axvspan(0.05, 0.30, color="0.92", alpha=0.8, label="summary window (50-300 ms)")
+    ax_k.axvspan(
+        echo_tmin,
+        echo_tmax,
+        color="0.92",
+        alpha=0.8,
+        label=f"summary window ({int(echo_tmin*1000)}-{int(echo_tmax*1000)} ms)",
+    )
+    ax_e.axvspan(
+        echo_tmin,
+        echo_tmax,
+        color="0.92",
+        alpha=0.8,
+        label=f"summary window ({int(echo_tmin*1000)}-{int(echo_tmax*1000)} ms)",
+    )
     for mode_key in MODE_ORDER:
         if mode_key not in results:
             continue
         r = results[mode_key]
         mean_txt = f"mean50-300={r.kurtosis_mean_50_300ms:.3f}" if np.isfinite(r.kurtosis_mean_50_300ms) else "mean50-300=N/A"
-        ax.plot(
+        ax_k.plot(
             r.kurt_t,
             r.kurtosis_curve,
-            lw=1.5,
+            lw=PLOT_LINEWIDTH_MAIN,
             color=MODE_COLORS[mode_key],
             label=f"{MODE_LABELS[mode_key]} ({mean_txt})",
         )
+        echo_txt = (
+            f"events/s50-300={r.echo_density_events_per_s_50_300ms:.2f}"
+            if np.isfinite(r.echo_density_events_per_s_50_300ms)
+            else "events/s50-300=N/A"
+        )
+        ax_e.plot(
+            r.echo_density_t,
+            r.echo_density_curve,
+            lw=PLOT_LINEWIDTH_MAIN,
+            color=MODE_COLORS[mode_key],
+            label=f"{MODE_LABELS[mode_key]} ({echo_txt})",
+        )
 
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Excess kurtosis (lower = more diffuse proxy)")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=8)
+    ax_k.set_ylabel("Excess kurtosis\n(lower = more diffuse)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_k.grid(alpha=0.25)
+    ax_k.legend(fontsize=PLOT_LEGEND_FONTSIZE)
+    ax_k.set_title("Kurtosis proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_k.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
+
+    ax_e.set_xlabel("Time (s)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_e.set_ylabel("Echo density\n(events/s)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_e.grid(alpha=0.25)
+    ax_e.legend(fontsize=PLOT_LEGEND_FONTSIZE)
+    ax_e.set_title("Echo-density proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    ax_e.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
@@ -666,8 +826,8 @@ def _plot_edc_overlay(
     results: Dict[str, ScenarioResult],
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(11, 4.8))
-    ax.set_title(f"EDC overlay ({config_id})")
+    fig, ax = plt.subplots(figsize=(12.5, 5.2))
+    ax.set_title(f"EDC overlay ({config_id})", fontsize=PLOT_TITLE_FONTSIZE)
     ax.axhspan(-10.0, 0.0, color="0.95", alpha=0.8, label="EDT fit band (0 to -10 dB)")
     ax.axhspan(-25.0, -5.0, color="0.92", alpha=0.7, label="T20 fit band (-5 to -25 dB)")
     ax.axhspan(-35.0, -5.0, color="0.88", alpha=0.45, label="T30 fit band (-5 to -35 dB)")
@@ -679,16 +839,17 @@ def _plot_edc_overlay(
         ax.plot(
             r.t,
             r.edc_db,
-            lw=1.3,
+            lw=PLOT_LINEWIDTH_MAIN,
             color=MODE_COLORS[mode_key],
             label=f"{MODE_LABELS[mode_key]} (RT60={r.rt60_s:.2f}s {r.rt60_method})",
         )
 
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("EDC (dB)")
+    ax.set_xlabel("Time (s)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax.set_ylabel("EDC (dB)", fontsize=PLOT_LABEL_FONTSIZE)
     ax.set_ylim(-80.0, 2.0)
     ax.grid(alpha=0.25)
-    ax.legend(fontsize=8, loc="upper right")
+    ax.legend(fontsize=PLOT_LEGEND_FONTSIZE, loc="upper right")
+    ax.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
@@ -736,40 +897,44 @@ def _plot_metrics_bars(
     x = np.arange(len(mode_keys))
     colors = [MODE_COLORS[k] for k in mode_keys]
 
-    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
-    fig.suptitle(f"Fixed vs Diff metrics ({config_id})", fontsize=13)
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7.8))
+    fig.suptitle(f"Fixed vs Diff metrics ({config_id})", fontsize=PLOT_TITLE_FONTSIZE)
 
     edt_vals = _bar_values([results[k].edt_s for k in mode_keys])
     rt_vals = _bar_values([results[k].rt60_s for k in mode_keys])
     spec_vals = _bar_values([results[k].spectral_dev_db for k in mode_keys])
     ring_vals = _bar_values([results[k].ringiness for k in mode_keys])
     kurt_vals = _bar_values([results[k].kurtosis_mean_50_300ms for k in mode_keys])
+    echo_vals = _bar_values([results[k].echo_density_events_per_s_50_300ms for k in mode_keys])
 
     axes[0, 0].bar(x, edt_vals, color=colors)
-    axes[0, 0].set_title("EDT")
-    axes[0, 0].set_ylabel("seconds")
+    axes[0, 0].set_title("EDT", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[0, 0].set_ylabel("seconds", fontsize=PLOT_LABEL_FONTSIZE)
 
     axes[0, 1].bar(x, rt_vals, color=colors)
-    axes[0, 1].set_title("RT60")
-    axes[0, 1].set_ylabel("seconds")
+    axes[0, 1].set_title("RT60", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[0, 1].set_ylabel("seconds", fontsize=PLOT_LABEL_FONTSIZE)
 
     axes[0, 2].bar(x, spec_vals, color=colors)
-    axes[0, 2].set_title("Spectral deviation")
-    axes[0, 2].set_ylabel("dB std (50 Hz - Nyquist)")
+    axes[0, 2].set_title("Spectral deviation", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[0, 2].set_ylabel("dB std (50 Hz - Nyquist)", fontsize=PLOT_LABEL_FONTSIZE)
 
     axes[1, 0].bar(x, ring_vals, color=colors)
-    axes[1, 0].set_title("Ringiness")
-    axes[1, 0].set_ylabel("peak/mean")
+    axes[1, 0].set_title("Ringiness", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[1, 0].set_ylabel("peak/mean", fontsize=PLOT_LABEL_FONTSIZE)
 
     axes[1, 1].bar(x, kurt_vals, color=colors)
-    axes[1, 1].set_title("Diffusion proxy")
-    axes[1, 1].set_ylabel("mean excess kurtosis (50-300 ms, lower=better)")
+    axes[1, 1].set_title("Kurtosis diffusion proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[1, 1].set_ylabel("mean excess kurtosis (50-300 ms)", fontsize=PLOT_LABEL_FONTSIZE)
 
-    axes[1, 2].axis("off")
+    axes[1, 2].bar(x, echo_vals, color=colors)
+    axes[1, 2].set_title("Echo-density proxy", fontsize=PLOT_LABEL_FONTSIZE)
+    axes[1, 2].set_ylabel("events/s (50-300 ms)", fontsize=PLOT_LABEL_FONTSIZE)
 
-    for ax in (axes[0, 0], axes[0, 1], axes[0, 2], axes[1, 0], axes[1, 1]):
+    for ax in (axes[0, 0], axes[0, 1], axes[0, 2], axes[1, 0], axes[1, 1], axes[1, 2]):
         ax.set_xticks(x, labels, rotation=10, ha="right")
         ax.grid(axis="y", alpha=0.25)
+        ax.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
@@ -803,6 +968,12 @@ def _write_sidecar(
     fixed_u: Sequence[float],
     nfft_used: int,
     aligned_length_samples: int,
+    echo_density_threshold_db: float,
+    echo_density_min_spacing_ms: float,
+    echo_density_window_ms: float,
+    echo_density_hop_ms: float,
+    echo_density_tmin: float,
+    echo_density_tmax: float,
 ) -> None:
     rt60_target = _preset_rt60_target(preset, float(preset.get("rt60", 2.8)))
     gamma_used = _preset_gamma_used(preset, float(preset["sr"]), rt60_target)
@@ -849,11 +1020,63 @@ def _write_sidecar(
         "diffusion_proxy_window_ms": 20.0,
         "diffusion_proxy_hop_ms": 5.0,
         "diffusion_proxy_summary_window_s": [0.05, 0.30],
+        "echo_density_proxy_name": "envelope_peak_event_rate",
+        "echo_density_proxy_definition": (
+            "Short-time RMS envelope peak/event rate with dynamic threshold and "
+            "minimum peak spacing. Summary is mean events/s in the configured window."
+        ),
+        "echo_density_threshold_db": float(echo_density_threshold_db),
+        "echo_density_min_spacing_ms": float(echo_density_min_spacing_ms),
+        "echo_density_window_ms": float(echo_density_window_ms),
+        "echo_density_hop_ms": float(echo_density_hop_ms),
+        "echo_density_summary_window_s": [float(echo_density_tmin), float(echo_density_tmax)],
         "compare_lti_enforced": bool(preset.get("compare_lti_enforced", False)),
         "compare_mod_depth": float(preset.get("mod_depth", 0.0)),
         "compare_detune": float(preset.get("detune", 0.0)),
         "compare_damp_hz": float(preset.get("damp_hz", 0.0)),
     }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _write_run_payload(
+    *,
+    path: Path,
+    base_config_id: str,
+    mode_keys: Sequence[str],
+    results: Dict[str, ScenarioResult],
+) -> None:
+    payload = {
+        "config_id": base_config_id,
+        "modes": {},
+    }
+    for mode_key in mode_keys:
+        if mode_key not in results:
+            continue
+        r = results[mode_key]
+        payload["modes"][mode_key] = {
+            "label": r.label,
+            "metrics": {
+                "spectral_loss_like": float(r.spectral_loss_like),
+                "spectral_dev_db": float(r.spectral_dev_db),
+                "rt60_s": float(r.rt60_s),
+                "edt_s": float(r.edt_s),
+                "ringiness": float(r.ringiness),
+                "kurtosis_mean_50_300ms": float(r.kurtosis_mean_50_300ms),
+                "echo_density_events_per_s_50_300ms": float(r.echo_density_events_per_s_50_300ms),
+                "sanity_max_db_error": float(r.sanity_max_db_error),
+            },
+            "curves": {
+                "kurtosis": {
+                    "t": [float(v) for v in r.kurt_t.tolist()],
+                    "y": [float(v) for v in r.kurtosis_curve.tolist()],
+                },
+                "echo_density": {
+                    "t": [float(v) for v in r.echo_density_t.tolist()],
+                    "y": [float(v) for v in r.echo_density_curve.tolist()],
+                },
+            },
+        }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -869,6 +1092,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scope", choices=["fixed", "u_only", "full", "all"], default="all")
     parser.add_argument("--channel", choices=["L", "R"], default="L", help="Channel for analysis/FFT")
     parser.add_argument("--seconds", type=float, default=None, help="IR seconds (default: max(8, 4*rt60))")
+    parser.add_argument("--seed", type=int, default=0, help="Seed for deterministic auxiliary ops")
     parser.add_argument(
         "--nfft",
         type=int,
@@ -879,6 +1103,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--smooth-bins", type=int, default=25, help="Smoothing window for dB overlays")
+    parser.add_argument("--max-freq-hz", type=float, default=12000.0, help="Max frequency shown in overlays")
     parser.add_argument(
         "--sanity-check",
         action=argparse.BooleanOptionalAction,
@@ -890,6 +1115,42 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=-60.0,
         help="Ignore diffusion windows below this RMS (dBFS)",
+    )
+    parser.add_argument(
+        "--echo-density-threshold-db",
+        type=float,
+        default=-30.0,
+        help="Dynamic threshold for echo-density event detection (dB relative to max envelope)",
+    )
+    parser.add_argument(
+        "--echo-density-min-spacing-ms",
+        type=float,
+        default=1.0,
+        help="Minimum spacing between counted envelope peaks (ms)",
+    )
+    parser.add_argument(
+        "--echo-density-window-ms",
+        type=float,
+        default=10.0,
+        help="RMS envelope window and event-rate integration window (ms)",
+    )
+    parser.add_argument(
+        "--echo-density-hop-ms",
+        type=float,
+        default=5.0,
+        help="Hop size for echo-density envelope/event curve (ms)",
+    )
+    parser.add_argument(
+        "--echo-density-tmin",
+        type=float,
+        default=0.05,
+        help="Summary window start for echo-density metric (s)",
+    )
+    parser.add_argument(
+        "--echo-density-tmax",
+        type=float,
+        default=0.30,
+        help="Summary window end for echo-density metric (s)",
     )
     parser.add_argument(
         "--trim-leading-silence",
@@ -928,6 +1189,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    np.random.seed(int(args.seed))
     repo_root = Path(__file__).resolve().parents[2]
     preset_paths = _find_presets_from_args(args)
 
@@ -949,6 +1211,7 @@ def main() -> None:
     generated_edc: List[Path] = []
     generated_diffusion: List[Path] = []
     generated_metrics: List[Path] = []
+    generated_run_json: List[Path] = []
     rendered_wavs: List[Path] = []
 
     for preset_path in preset_paths:
@@ -1060,7 +1323,22 @@ def main() -> None:
                 rms_threshold_db=float(args.kurtosis_rms_threshold_db),
             )
             kurt_mean = _mean_in_window(kurt_t, kurt_curve, 0.05, 0.30)
-            sanity_max_db_error = _max_db_error(analytic_mag_db_s, ir_mag_db_unwindowed_s, freqs)
+            echo_t, echo_curve, echo_mean = _echo_density_curve(
+                sig,
+                sr,
+                threshold_db=float(args.echo_density_threshold_db),
+                min_spacing_ms=float(args.echo_density_min_spacing_ms),
+                window_ms=float(args.echo_density_window_ms),
+                hop_ms=float(args.echo_density_hop_ms),
+                tmin=float(args.echo_density_tmin),
+                tmax=float(args.echo_density_tmax),
+            )
+            sanity_max_db_error = _max_db_error(
+                analytic_mag_db_s,
+                ir_mag_db_unwindowed_s,
+                freqs,
+                max_freq_hz=float(args.max_freq_hz),
+            )
             sanity_errors_db[mode_key] = sanity_max_db_error
 
             result = ScenarioResult(
@@ -1087,6 +1365,9 @@ def main() -> None:
                 kurt_t=kurt_t,
                 kurtosis_curve=kurt_curve,
                 kurtosis_mean_50_300ms=kurt_mean,
+                echo_density_t=echo_t,
+                echo_density_curve=echo_curve,
+                echo_density_events_per_s_50_300ms=echo_mean,
                 sanity_max_db_error=sanity_max_db_error,
             )
             scenario_results[mode_key] = result
@@ -1110,6 +1391,12 @@ def main() -> None:
                 fixed_u=fixed_u,
                 nfft_used=nfft,
                 aligned_length_samples=min_len,
+                echo_density_threshold_db=float(args.echo_density_threshold_db),
+                echo_density_min_spacing_ms=float(args.echo_density_min_spacing_ms),
+                echo_density_window_ms=float(args.echo_density_window_ms),
+                echo_density_hop_ms=float(args.echo_density_hop_ms),
+                echo_density_tmin=float(args.echo_density_tmin),
+                echo_density_tmax=float(args.echo_density_tmax),
             )
 
             u_vals = [float(v) for v in result.preset["u"]]  # type: ignore[index]
@@ -1134,6 +1421,7 @@ def main() -> None:
                     "edt_s": result.edt_s,
                     "ringiness": result.ringiness,
                     "kurtosis_mean_50_300ms": result.kurtosis_mean_50_300ms,
+                    "echo_density_events_per_s_50_300ms": result.echo_density_events_per_s_50_300ms,
                     "sanity_max_db_error": result.sanity_max_db_error,
                 }
             )
@@ -1151,6 +1439,7 @@ def main() -> None:
             db_by_mode=analytic_db_by_mode,
             smooth_bins=args.smooth_bins,
             y_axis_label="Magnitude (dB, mean-normalized)",
+            max_freq_hz=float(args.max_freq_hz),
         )
         _plot_overlay_with_delta(
             irfft_fig,
@@ -1159,6 +1448,7 @@ def main() -> None:
             db_by_mode=ir_db_by_mode,
             smooth_bins=args.smooth_bins,
             y_axis_label="Magnitude (dB, mean-normalized)",
+            max_freq_hz=float(args.max_freq_hz),
         )
         _plot_edc_overlay(
             edc_fig,
@@ -1170,6 +1460,8 @@ def main() -> None:
             config_id=f"{base_config_id}, {decay_tag}",
             results=scenario_results,
             rms_threshold_db=float(args.kurtosis_rms_threshold_db),
+            echo_tmin=float(args.echo_density_tmin),
+            echo_tmax=float(args.echo_density_tmax),
         )
         _plot_metrics_bars(
             metrics_fig,
@@ -1183,6 +1475,15 @@ def main() -> None:
         generated_edc.append(edc_fig)
         generated_diffusion.append(diffusion_fig)
         generated_metrics.append(metrics_fig)
+
+        run_payload = fig_dir / f"fixed_vs_diff_run_{slug}.json"
+        _write_run_payload(
+            path=run_payload,
+            base_config_id=base_config_id,
+            mode_keys=mode_keys,
+            results=scenario_results,
+        )
+        generated_run_json.append(run_payload)
 
         if args.sanity_check:
             print(f"Sanity analytic-vs-IR max dB error ({base_config_id}):")
@@ -1202,6 +1503,8 @@ def main() -> None:
     shutil.copyfile(generated_edc[0], generic_edc)
     shutil.copyfile(generated_diffusion[0], generic_diffusion)
     shutil.copyfile(generated_metrics[0], generic_metrics)
+    if generated_run_json:
+        shutil.copyfile(generated_run_json[0], fig_dir / "fixed_vs_diff_run.json")
 
     _write_summary_csv(summary_table_csv, summary_rows)
     _write_summary_csv(summary_csv, summary_rows)
@@ -1216,6 +1519,9 @@ def main() -> None:
     print(f"Wrote figure: {generic_edc}")
     print(f"Wrote figure: {generic_diffusion}")
     print(f"Wrote figure: {generic_metrics}")
+    run_json_generic = fig_dir / "fixed_vs_diff_run.json"
+    if run_json_generic.exists():
+        print(f"Wrote run JSON: {run_json_generic}")
 
     if len(generated_analytic) > 1:
         print("Additional per-config figures:")
