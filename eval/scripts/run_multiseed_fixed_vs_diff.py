@@ -207,8 +207,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--alpha-sparsity", type=float, default=0.05)
     parser.add_argument("--spectral-mode", choices=["unity", "mean"], default="unity")
-    parser.add_argument("--train-lossless", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--optimize-with-decay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--train-lossless", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--optimize-with-decay", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--learn-io", action=argparse.BooleanOptionalAction, default=False)
 
     # compare pass-through
@@ -228,8 +228,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trim-max-seconds", type=float, default=0.5)
     parser.add_argument("--sanity-check", action=argparse.BooleanOptionalAction, default=True)
 
-    parser.add_argument("--preset-dir", default="eval/out/presets")
-    parser.add_argument("--fig-root", default="eval/figs/multiseed")
+    parser.add_argument(
+        "--preset-out-root",
+        default="eval/out/presets",
+        help="Directory for seed-specific preset JSON outputs",
+    )
+    parser.add_argument(
+        "--out-root",
+        default=None,
+        help="Root output dir (default: eval/figs/multiseed/<config-id>)",
+    )
+    # Backwards-compat aliases.
+    parser.add_argument("--preset-dir", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--fig-root", default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -238,8 +249,15 @@ def main() -> None:
     seeds = _parse_seed_csv(args.seeds)
 
     repo_root = Path(__file__).resolve().parents[2]
-    preset_dir = (repo_root / args.preset_dir).resolve()
-    run_root = (repo_root / args.fig_root / args.config_id).resolve()
+    preset_root = args.preset_out_root if args.preset_out_root is not None else args.preset_dir
+    if preset_root is None:
+        preset_root = "eval/out/presets"
+    preset_dir = (repo_root / preset_root).resolve()
+    if args.out_root:
+        run_root = (repo_root / args.out_root).resolve()
+    else:
+        fig_base = args.fig_root if args.fig_root is not None else "eval/figs/multiseed"
+        run_root = (repo_root / fig_base / args.config_id).resolve()
     paper_dir = run_root / "paper"
     run_root.mkdir(parents=True, exist_ok=True)
     preset_dir.mkdir(parents=True, exist_ok=True)
@@ -389,25 +407,22 @@ def main() -> None:
 
     aggregate_summary = run_root / "aggregate_summary.csv"
     aggregate_stats = run_root / "aggregate_stats.json"
-    fieldnames = ["mode", "n"]
-    for metric in METRICS:
-        fieldnames += [f"{metric}_mean", f"{metric}_std", f"{metric}_min", f"{metric}_max"]
-    with aggregate_summary.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for mode in MODE_ORDER:
-            row: Dict[str, object] = {"mode": mode, "n": len(seeds)}
-            for metric in METRICS:
-                stats = stats_by_mode[mode][metric]
-                row[f"{metric}_mean"] = stats["mean"]
-                row[f"{metric}_std"] = stats["std"]
-                row[f"{metric}_min"] = stats["min"]
-                row[f"{metric}_max"] = stats["max"]
-            writer.writerow(row)
+    if per_seed_rows:
+        ordered_fields = ["seed"] + [k for k in per_seed_rows[0].keys() if k != "seed"]
+        with aggregate_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=ordered_fields)
+            writer.writeheader()
+            for row in per_seed_rows:
+                writer.writerow({k: row.get(k, "") for k in ordered_fields})
+    else:
+        with aggregate_summary.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["seed", "scope", "mode"])
 
     aggregate_payload = {
         "config_id": args.config_id,
         "seeds": seeds,
+        "n_rows_seed_mode": len(per_seed_rows),
         "metrics": stats_by_mode,
         "paths": {
             "aggregate_summary_csv": str(aggregate_summary),
