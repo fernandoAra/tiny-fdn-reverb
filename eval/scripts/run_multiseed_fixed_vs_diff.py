@@ -364,12 +364,27 @@ def main() -> None:
             continue
 
         summary_table = seed_dir / "fixed_vs_diff_summary_table.csv"
+        if not summary_table.is_file():
+            raise RuntimeError(
+                f"Missing per-seed summary table: {summary_table}. "
+                "compare_fixed_vs_diff.py may have failed before writing outputs."
+            )
         rows = _read_csv_rows(summary_table)
+        if not rows:
+            raise RuntimeError(
+                f"Per-seed summary table has no data rows: {summary_table}. "
+                "Refusing to write an empty aggregate_summary.csv."
+            )
         for row in rows:
             row["seed"] = str(seed)
             per_seed_rows.append(row)
 
         run_json = seed_dir / "fixed_vs_diff_run.json"
+        if not run_json.is_file():
+            raise RuntimeError(
+                f"Missing per-seed run payload: {run_json}. "
+                "compare_fixed_vs_diff.py did not produce fixed_vs_diff_run.json."
+            )
         payload = json.loads(run_json.read_text())
         modes = payload.get("modes", {})
         for mode in MODE_ORDER:
@@ -405,19 +420,20 @@ def main() -> None:
         for metric in METRICS:
             stats_by_mode[mode][metric] = _aggregate_metric(by_mode_metric[mode][metric])
 
+    if not per_seed_rows:
+        raise RuntimeError(
+            "No per-seed rows were collected. "
+            "aggregate_summary.csv was not written to avoid a header-only empty report."
+        )
+
     aggregate_summary = run_root / "aggregate_summary.csv"
     aggregate_stats = run_root / "aggregate_stats.json"
-    if per_seed_rows:
-        ordered_fields = ["seed"] + [k for k in per_seed_rows[0].keys() if k != "seed"]
-        with aggregate_summary.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=ordered_fields)
-            writer.writeheader()
-            for row in per_seed_rows:
-                writer.writerow({k: row.get(k, "") for k in ordered_fields})
-    else:
-        with aggregate_summary.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["seed", "scope", "mode"])
+    ordered_fields = ["seed"] + [k for k in per_seed_rows[0].keys() if k != "seed"]
+    with aggregate_summary.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ordered_fields)
+        writer.writeheader()
+        for row in per_seed_rows:
+            writer.writerow({k: row.get(k, "") for k in ordered_fields})
 
     aggregate_payload = {
         "config_id": args.config_id,
