@@ -49,7 +49,7 @@ def hz_to_k(
 ) -> int:
     """Map Hz to nearest k-index, clamped to the valid [0, freq_grid_size-1] range."""
     grid_n = max(int(freq_grid_size), 2)
-    hz_clamped = min(max(float(hz), 0.0), 0.499 * float(sr))
+    hz_clamped = min(max(float(hz), 0.0), 0.5 * float(sr))
     k = int(round(hz_clamped * (2.0 * float(grid_n)) / float(sr)))
     return int(min(max(k, 0), grid_n - 1))
 
@@ -62,19 +62,47 @@ def build_band_k_pool(
     fmax_hz: float,
     exclude_dc: bool = True,
     device: Optional[torch.device] = None,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, int, int, int]:
     """Build an increasing 1D k-index pool for a target Hz band."""
     grid_n = max(int(freq_grid_size), 2)
-    band_max = min(max(float(fmax_hz), 0.0), 0.499 * float(sr))
+    band_max = min(max(float(fmax_hz), 0.0), 0.49 * float(sr))
     band_min = max(0.0, min(float(fmin_hz), band_max))
     k_min = hz_to_k(sr=sr, freq_grid_size=grid_n, hz=band_min)
     k_max = hz_to_k(sr=sr, freq_grid_size=grid_n, hz=band_max)
     if k_max < k_min:
-        return torch.empty((0,), dtype=torch.int64, device=device)
+        empty = torch.empty((0,), dtype=torch.int64, device=device)
+        return empty, 0, -1, 0
     pool = torch.arange(k_min, k_max + 1, dtype=torch.int64, device=device)
     if exclude_dc:
         pool = pool[pool != 0]
-    return pool
+    if pool.numel() == 0:
+        return pool, 0, -1, 0
+    return pool, int(pool[0].item()), int(pool[-1].item()), int(pool.numel())
+
+
+def sample_k_from_pool(
+    pool: torch.Tensor,
+    batch_size: int,
+    *,
+    np_rng: np.random.Generator,
+    device: torch.device,
+    warn_on_replacement: bool = True,
+) -> torch.Tensor:
+    pool_cpu = torch.as_tensor(pool, dtype=torch.int64, device=torch.device("cpu"))
+    pool_np = pool_cpu.detach().cpu().numpy().astype(np.int64)
+    if pool_np.size == 0:
+        raise RuntimeError("Cannot sample k-indices from an empty pool")
+
+    draw_n = max(int(batch_size), 1)
+    replace = draw_n > pool_np.size
+    if replace and warn_on_replacement:
+        print(
+            "[WARN] sampled_k uses replacement because batch_size={} > pool_count={}".format(
+                draw_n, int(pool_np.size)
+            )
+        )
+    sampled = np_rng.choice(pool_np, size=draw_n, replace=replace)
+    return torch.as_tensor(sampled, dtype=torch.int64, device=device)
 
 
 def hadamard4_matrix(
@@ -320,6 +348,9 @@ def compute_losses(
 class OptimizeResult:
     matrix_type: str
     gamma_used: float
+    gamma_train: float
+    stability_gamma: float
+    training_mode: str
     u: torch.Tensor
     U: torch.Tensor
     b: torch.Tensor
@@ -346,7 +377,7 @@ def _sample_k_indices(
 ) -> torch.Tensor:
     if prebuilt_pool is None:
         if paper_band_enable:
-            pool = build_band_k_pool(
+            pool, _, _, _ = build_band_k_pool(
                 sr=sr,
                 freq_grid_size=freq_grid_size,
                 fmin_hz=paper_band_min_hz,
@@ -355,31 +386,17 @@ def _sample_k_indices(
                 device=torch.device("cpu"),
             )
         else:
-            pool = build_band_k_pool(
-                sr=sr,
-                freq_grid_size=freq_grid_size,
-                fmin_hz=0.0,
-                fmax_hz=0.499 * float(sr),
-                exclude_dc=exclude_dc,
-                device=torch.device("cpu"),
-            )
+            start_k = 1 if exclude_dc else 0
+            pool = torch.arange(start_k, max(int(freq_grid_size), 2), dtype=torch.int64, device=torch.device("cpu"))
     else:
         pool = prebuilt_pool.to(device=torch.device("cpu"), dtype=torch.int64)
-
-    pool_np = pool.detach().cpu().numpy().astype(np.int64)
-    if pool_np.size == 0:
-        raise RuntimeError("Cannot sample k-indices from an empty pool")
-
-    draw_n = max(int(batch_size), 1)
-    replace = draw_n > pool_np.size
-    if replace and warn_on_replacement:
-        print(
-            "[WARN] sampled_k uses replacement because batch_size={} > pool_count={}".format(
-                draw_n, int(pool_np.size)
-            )
-        )
-    sampled = np_rng.choice(pool_np, size=draw_n, replace=replace)
-    return torch.as_tensor(sampled, dtype=torch.int64, device=device)
+    return sample_k_from_pool(
+        pool,
+        batch_size,
+        np_rng=np_rng,
+        device=device,
+        warn_on_replacement=warn_on_replacement,
+    )
 
 
 def evaluate_transfer_losses(
@@ -440,8 +457,8 @@ def evaluate_transfer_losses(
         exclude_dc = bool(torch.any(k_int == 0).item())
         if paper_band_enable and freq_grid_size is not None:
             bin_hz = float(sr) / (2.0 * float(max(int(freq_grid_size), 2)))
-            f_min = max(0.0, min(float(paper_band_min_hz), 0.499 * float(sr)))
-            f_max = min(max(float(paper_band_max_hz), 0.0), 0.499 * float(sr))
+            f_min = max(0.0, min(float(paper_band_min_hz), 0.49 * float(sr)))
+            f_max = min(max(float(paper_band_max_hz), 0.0), 0.49 * float(sr))
             f_max = max(f_max, f_min)
             k_hz = k_to_hz(
                 sr=sr,
@@ -491,6 +508,7 @@ def optimize_householder(
     batch_size: int = 2000,
     lr: float = 1e-3,
     gamma: Optional[float] = None,
+    stability_gamma: float = 0.9999,
     train_lossless: bool = True,
     alpha_density: float = 0.0,
     learn_io: bool = False,
@@ -498,6 +516,7 @@ def optimize_householder(
     paper_band_enable: bool = True,
     paper_band_min_hz: float = 50.0,
     paper_band_max_hz: float = 12000.0,
+    paper_band_debug: bool = False,
     val_split: float = 0.2,
     spectral_mode: str = "unity",
     seed: int = 0,
@@ -518,13 +537,16 @@ def optimize_householder(
         raise ValueError(f"This tiny model expects N=4, got N={n}")
 
     gamma_used = gamma_from_rt60(sr, rt60) if gamma is None else float(gamma)
+    stability_gamma_clamped = min(max(float(stability_gamma), 1e-6), 0.999999)
     if train_lossless:
-        # Paper-style "colorless core" training: optimize with unit loop gain.
-        gains = torch.ones((n,), dtype=dtype, device=device)
-        gamma_train = 1.0
+        # Paper-style "colorless core" training, stabilized slightly inside the unit circle.
+        gains = gains_from_gamma(delay.tolist(), stability_gamma_clamped, dtype=dtype).to(device)
+        gamma_train = stability_gamma_clamped
+        training_mode = "lossless-core-stabilized"
     else:
         gains = gains_from_gamma(delay.tolist(), gamma_used, dtype=dtype).to(device)
         gamma_train = gamma_used
+        training_mode = "with-decay"
     matrix_kind = matrix_type.lower()
     if matrix_kind not in {"householder", "hadamard"}:
         raise ValueError("matrix_type must be 'householder' or 'hadamard'")
@@ -567,10 +589,10 @@ def optimize_householder(
     }
 
     freq_grid_size = max(int(M), 2)
-    band_max = min(max(float(paper_band_max_hz), 0.0), 0.499 * float(sr))
+    band_max = min(max(float(paper_band_max_hz), 0.0), 0.49 * float(sr))
     band_min = max(0.0, min(float(paper_band_min_hz), band_max))
     if bool(paper_band_enable):
-        band_k_pool_tensor = build_band_k_pool(
+        band_k_pool_tensor, band_k_min, band_k_max, band_k_pool_count = build_band_k_pool(
             sr=sr,
             freq_grid_size=freq_grid_size,
             fmin_hz=band_min,
@@ -579,19 +601,56 @@ def optimize_householder(
             device=torch.device("cpu"),
         )
     else:
-        band_k_pool_tensor = build_band_k_pool(
-            sr=sr,
-            freq_grid_size=freq_grid_size,
-            fmin_hz=0.0,
-            fmax_hz=0.499 * float(sr),
-            exclude_dc=True,
-            device=torch.device("cpu"),
-        )
+        band_k_pool_tensor = torch.arange(1, freq_grid_size, dtype=torch.int64, device=torch.device("cpu"))
+        band_k_pool_count = int(band_k_pool_tensor.numel())
+        band_k_min = int(band_k_pool_tensor[0].item()) if band_k_pool_count > 0 else 0
+        band_k_max = int(band_k_pool_tensor[-1].item()) if band_k_pool_count > 0 else -1
     band_k_pool = band_k_pool_tensor.detach().cpu().numpy().astype(np.int64)
     if band_k_pool.size == 0:
         raise RuntimeError(
             "paper-band k-pool is empty. Adjust --paper-band-min-hz/--paper-band-max-hz "
             "or increase M/freq_grid_size."
+        )
+
+    if paper_band_debug:
+        dbg_rng = np.random.default_rng(seed_i)
+        sample_n = min(10, band_k_pool_count)
+        dbg_sample = np.sort(dbg_rng.choice(band_k_pool, size=sample_n, replace=False))
+        dbg_sample_hz = k_to_hz(
+            sr=sr,
+            freq_grid_size=freq_grid_size,
+            k=torch.as_tensor(dbg_sample, dtype=torch.int64),
+            dtype=dtype,
+        ).detach().cpu()
+        dbg_minibatch = sample_k_from_pool(
+            band_k_pool_tensor,
+            max(int(freq_bins_per_step) if int(freq_bins_per_step) > 0 else int(batch_size), 1),
+            np_rng=dbg_rng,
+            device=torch.device("cpu"),
+            warn_on_replacement=True,
+        )
+        dbg_minibatch_hz = k_to_hz(
+            sr=sr,
+            freq_grid_size=freq_grid_size,
+            k=dbg_minibatch.to(dtype),
+            dtype=dtype,
+        ).detach().cpu()
+        print("[paper-band debug]")
+        print(f"  sr={int(sr)} freq_grid_size={int(freq_grid_size)}")
+        print(f"  paper_band_min_hz={band_min:.3f} paper_band_max_hz={band_max:.3f}")
+        print(
+            f"  derived_k_min={band_k_min} derived_k_max={band_k_max} "
+            f"pool_k_min={band_k_min} pool_k_max={band_k_max} pool_count={band_k_pool_count}"
+        )
+        print("  sample k->hz:")
+        for k_i, hz_i in zip(dbg_sample.tolist(), dbg_sample_hz.tolist()):
+            print(f"    k={int(k_i):6d} -> {float(hz_i):10.6f} Hz")
+        print(
+            "  sampled minibatch hz stats: min={:.6f} max={:.6f} mean={:.6f}".format(
+                float(torch.min(dbg_minibatch_hz).item()),
+                float(torch.max(dbg_minibatch_hz).item()),
+                float(torch.mean(dbg_minibatch_hz).item()),
+            )
         )
 
     np_rng = np.random.default_rng(seed_i)
@@ -600,10 +659,10 @@ def optimize_householder(
         train_pool = shuffled_pool
         val_pool = shuffled_pool
     else:
-        val_count = max(1, int(round(float(val_split) * float(shuffled_pool.size))))
-        val_count = min(val_count, shuffled_pool.size - 1)
-        val_pool = shuffled_pool[:val_count]
-        train_pool = shuffled_pool[val_count:]
+        train_count = max(1, int(round((1.0 - float(val_split)) * float(shuffled_pool.size))))
+        train_count = min(train_count, shuffled_pool.size - 1)
+        train_pool = shuffled_pool[:train_count]
+        val_pool = shuffled_pool[train_count:]
         if train_pool.size == 0:
             train_pool = shuffled_pool
 
@@ -843,20 +902,25 @@ def optimize_householder(
         "best_val_spectral_loss_like_50_12k": float(best_val_spectral),
         "best_val_spectral_dev_db_50_12k": float(best_val_dev),
         "final_spectral_dev_db_50_12k": float(final_dev),
-        "training_band_k_count": float(band_k_pool.size),
-        "band_k_min": float(int(np.min(band_k_pool))),
-        "band_k_max": float(int(np.max(band_k_pool))),
+        "training_band_k_count": float(band_k_pool_count),
+        "band_k_min": float(band_k_min),
+        "band_k_max": float(band_k_max),
         "train_band_k_count": float(train_pool.size),
         "val_band_k_count": float(val_pool.size),
         "freq_grid_size": float(freq_grid_size),
         "paper_band_enable": float(1.0 if paper_band_enable else 0.0),
         "paper_band_min_hz": float(band_min),
         "paper_band_max_hz": float(band_max),
+        "gamma_train": float(gamma_train),
+        "stability_gamma": float(stability_gamma_clamped),
     }
 
     return OptimizeResult(
         matrix_type=matrix_kind,
-        gamma_used=float(gamma_train),
+        gamma_used=float(gamma_used),
+        gamma_train=float(gamma_train),
+        stability_gamma=float(stability_gamma_clamped),
+        training_mode=training_mode,
         u=final_u.detach().cpu(),
         U=final_U.detach().cpu(),
         b=final_b.detach().cpu(),

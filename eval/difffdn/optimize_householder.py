@@ -81,20 +81,36 @@ def _evaluate_householder_loss(
     nfft: int,
     delay_samples: List[int],
     gamma: float,
+    stability_gamma: float,
     M: int,
     dtype: torch.dtype,
     alpha_sparsity: float,
     spectral_mode: str,
     train_lossless: bool,
+    paper_band_enable: bool,
+    paper_band_min_hz: float,
+    paper_band_max_hz: float,
     u: torch.Tensor,
     b: torch.Tensor,
     c_l: torch.Tensor,
     c_r: torch.Tensor,
 ) -> Dict[str, float]:
     if train_lossless:
-        gains = torch.ones((len(delay_samples),), dtype=dtype, device=torch.device("cpu"))
+        gains = gains_from_gamma(delay_samples, stability_gamma, dtype=dtype).to(torch.device("cpu"))
     else:
         gains = gains_from_gamma(delay_samples, gamma, dtype=dtype).to(torch.device("cpu"))
+    if paper_band_enable:
+        band_pool, _, _, _ = build_band_k_pool(
+            sr=fs,
+            freq_grid_size=max(int(M), 2),
+            fmin_hz=paper_band_min_hz,
+            fmax_hz=paper_band_max_hz,
+            exclude_dc=True,
+            device=torch.device("cpu"),
+        )
+        eval_k = band_pool
+    else:
+        eval_k = torch.arange(1, max(int(M), 2), dtype=torch.int64, device=torch.device("cpu"))
     losses = evaluate_transfer_losses(
         sr=fs,
         nfft=nfft,
@@ -107,7 +123,11 @@ def _evaluate_householder_loss(
         c_r=c_r,
         alpha_density=alpha_sparsity,
         spectral_mode=spectral_mode,
+        k_indices=eval_k,
         freq_grid_size=max(int(M), 2),
+        paper_band_enable=paper_band_enable,
+        paper_band_min_hz=paper_band_min_hz,
+        paper_band_max_hz=paper_band_max_hz,
     )
     return {
         "total": float(losses["total"].detach().cpu()),
@@ -154,7 +174,7 @@ def _print_paper_band_debug(
     dtype: torch.dtype,
 ) -> Dict[str, int]:
     if paper_band_enable:
-        pool = build_band_k_pool(
+        pool, k_min, k_max, pool_count = build_band_k_pool(
             sr=fs,
             freq_grid_size=freq_grid_size,
             fmin_hz=paper_band_min_hz,
@@ -166,22 +186,21 @@ def _print_paper_band_debug(
         fmax_dbg = paper_band_max_hz
     else:
         fmin_dbg = 0.0
-        fmax_dbg = 0.499 * fs
-        pool = build_band_k_pool(
+        fmax_dbg = k_to_hz(
             sr=fs,
             freq_grid_size=freq_grid_size,
-            fmin_hz=fmin_dbg,
-            fmax_hz=fmax_dbg,
-            exclude_dc=True,
-            device=torch.device("cpu"),
-        )
+            k=torch.tensor(freq_grid_size - 1, dtype=torch.int64),
+            dtype=dtype,
+        ).item()
+        pool = torch.arange(1, freq_grid_size, dtype=torch.int64, device=torch.device("cpu"))
+        k_min = int(pool[0].item()) if pool.numel() > 0 else 0
+        k_max = int(pool[-1].item()) if pool.numel() > 0 else -1
+        pool_count = int(pool.numel())
 
     pool_np = pool.detach().cpu().numpy().astype(int)
     if pool_np.size == 0:
         raise RuntimeError("paper band pool is empty; adjust fs/M/band settings")
 
-    k_min = int(pool_np[0])
-    k_max = int(pool_np[-1])
     k_from_min = hz_to_k(sr=fs, freq_grid_size=freq_grid_size, hz=fmin_dbg)
     k_from_max = hz_to_k(sr=fs, freq_grid_size=freq_grid_size, hz=fmax_dbg)
     print("[paper-band debug]")
@@ -189,7 +208,7 @@ def _print_paper_band_debug(
     print(f"  paper_band_min_hz={float(fmin_dbg):.3f} paper_band_max_hz={float(fmax_dbg):.3f}")
     print(
         f"  derived_k_min={k_from_min} derived_k_max={k_from_max} "
-        f"pool_k_min={k_min} pool_k_max={k_max} pool_count={int(pool_np.size)}"
+        f"pool_k_min={k_min} pool_k_max={k_max} pool_count={pool_count}"
     )
 
     dbg_rng = np.random.default_rng(1234)
@@ -220,12 +239,14 @@ def _print_paper_band_debug(
         dtype=dtype,
     ).detach().cpu()
     print(
-        "  sampled minibatch hz range: min={:.6f} max={:.6f}".format(
-            float(torch.min(mini_hz).item()), float(torch.max(mini_hz).item())
+        "  sampled minibatch hz stats: min={:.6f} max={:.6f} mean={:.6f}".format(
+            float(torch.min(mini_hz).item()),
+            float(torch.max(mini_hz).item()),
+            float(torch.mean(mini_hz).item()),
         )
     )
     return {
-        "band_k_pool_count": int(pool_np.size),
+        "band_k_pool_count": int(pool_count),
         "band_k_min": int(k_min),
         "band_k_max": int(k_max),
     }
@@ -250,6 +271,12 @@ def main() -> None:
         type=float,
         default=None,
         help="Optional explicit per-sample decay gamma. If omitted, derived from --rt60.",
+    )
+    parser.add_argument(
+        "--stability-gamma",
+        type=float,
+        default=0.9999,
+        help="Training-only stability radius (gain_per_sample) used for lossless-core transfer evaluation.",
     )
     parser.add_argument(
         "--alpha-sparsity",
@@ -313,23 +340,24 @@ def main() -> None:
     steps_per_epoch = max(1, (M + batch - 1) // batch)
     total_steps = int(args.steps) if args.steps is not None else (epochs * steps_per_epoch)
     gamma_used = float(args.gamma) if args.gamma is not None else gamma_from_rt60(fs, args.rt60)
+    stability_gamma = min(max(float(args.stability_gamma), 1e-6), 0.999999)
     gamma_source = "explicit_gamma" if args.gamma is not None else "rt60_target"
     train_lossless = bool(args.train_lossless) or (not bool(args.optimize_with_decay))
     optimize_with_decay = not train_lossless
-    training_mode = "lossless-core" if train_lossless else "with-decay"
-    gamma_train = 1.0 if train_lossless else gamma_used
+    training_mode = "lossless-core-stabilized" if train_lossless else "with-decay"
+    gamma_train = stability_gamma if train_lossless else gamma_used
     paper_band_max = min(max(float(args.paper_band_max_hz), 0.0), 0.49 * fs)
     paper_band_min = max(0.0, min(float(args.paper_band_min_hz), paper_band_max))
     freq_grid_size = max(int(M), 2)
 
-    k_probe = torch.tensor([0, freq_grid_size // 2], dtype=dtype)
+    k_probe = torch.tensor([0, freq_grid_size - 1], dtype=dtype)
     hz_probe = k_to_hz(sr=fs, freq_grid_size=freq_grid_size, k=k_probe, dtype=dtype)
     if abs(float(hz_probe[0].detach().cpu())) > 1e-9:
         raise RuntimeError("k_to_hz mapping check failed: k=0 must map to 0 Hz")
     if args.debug_k_map:
         print(
             f"[k-map] k=0 -> {float(hz_probe[0]):.6f} Hz, "
-            f"k={freq_grid_size//2} -> {float(hz_probe[1]):.6f} Hz "
+            f"k={freq_grid_size-1} -> {float(hz_probe[1]):.6f} Hz "
             f"(Nyquist≈{0.5*fs:.6f} Hz)"
         )
 
@@ -337,7 +365,7 @@ def main() -> None:
         _print_eq18_sanity(dtype)
 
     if bool(args.paper_band_enable):
-        band_pool = build_band_k_pool(
+        band_pool, band_k_min, band_k_max, band_pool_count = build_band_k_pool(
             sr=fs,
             freq_grid_size=freq_grid_size,
             fmin_hz=paper_band_min,
@@ -346,21 +374,14 @@ def main() -> None:
             device=torch.device("cpu"),
         )
     else:
-        band_pool = build_band_k_pool(
-            sr=fs,
-            freq_grid_size=freq_grid_size,
-            fmin_hz=0.0,
-            fmax_hz=0.499 * fs,
-            exclude_dc=True,
-            device=torch.device("cpu"),
-        )
+        band_pool = torch.arange(1, freq_grid_size, dtype=torch.int64, device=torch.device("cpu"))
+        band_pool_count = int(band_pool.numel())
+        band_k_min = int(band_pool[0].item()) if band_pool_count > 0 else 0
+        band_k_max = int(band_pool[-1].item()) if band_pool_count > 0 else -1
     if int(band_pool.numel()) == 0:
         raise RuntimeError("paper-band pool is empty; adjust fs/M/band args")
-    band_pool_count = int(band_pool.numel())
-    band_k_min = int(band_pool[0].item())
-    band_k_max = int(band_pool[-1].item())
 
-    if args.paper_band_debug or args.paper_band_selfcheck:
+    if args.paper_band_selfcheck:
         dbg_meta = _print_paper_band_debug(
             fs=fs,
             freq_grid_size=freq_grid_size,
@@ -382,7 +403,8 @@ def main() -> None:
     print(
         "[TRAINING CONFIG]\n"
         f"  fs={fs:.1f} rt60_target={float(args.rt60):.4f}s gamma_used={gamma_used:.9f}\n"
-        f"  gamma_train={gamma_train:.9f} training_mode={training_mode} train_lossless={str(train_lossless).lower()}\n"
+        f"  stability_gamma={stability_gamma:.9f} gamma_train={gamma_train:.9f} "
+        f"training_mode={training_mode} train_lossless={str(train_lossless).lower()}\n"
         f"  M={M} freq_grid_size={freq_grid_size} batch={batch} epochs={epochs} total_steps={total_steps} lr={args.lr}\n"
         f"  seed={args.seed} spectral_mode={args.spectral_mode} alpha_density={alpha_sparsity:.6f} learn_io={str(bool(args.learn_io)).lower()}\n"
         f"  paper_band_enable={str(bool(args.paper_band_enable)).lower()} paper_band_min_hz={paper_band_min:.2f} paper_band_max_hz={paper_band_max:.2f} "
@@ -401,6 +423,7 @@ def main() -> None:
         batch_size=batch,
         lr=args.lr,
         gamma=gamma_used,
+        stability_gamma=stability_gamma,
         train_lossless=train_lossless,
         alpha_density=alpha_sparsity,
         learn_io=args.learn_io,
@@ -408,6 +431,7 @@ def main() -> None:
         paper_band_enable=bool(args.paper_band_enable),
         paper_band_min_hz=paper_band_min,
         paper_band_max_hz=paper_band_max,
+        paper_band_debug=bool(args.paper_band_debug),
         val_split=0.2,
         spectral_mode=args.spectral_mode,
         seed=args.seed,
@@ -443,7 +467,9 @@ def main() -> None:
         "gamma_source": gamma_source,
         "train_lossless": bool(train_lossless),
         "optimize_with_decay": bool(optimize_with_decay),
-        "gamma_train": float(gamma_train),
+        "stability_gamma": float(stability_gamma),
+        "gamma_train": float(result.gamma_train),
+        "training_mode": str(result.training_mode),
         "alpha_density": float(alpha_sparsity),
         "alpha_sparsity": float(alpha_sparsity),
         "spectral_mode": args.spectral_mode,
@@ -506,11 +532,15 @@ def main() -> None:
             nfft=args.nfft,
             delay_samples=delay_samples,
             gamma=gamma_used,
+            stability_gamma=stability_gamma,
             M=M,
             dtype=dtype,
             alpha_sparsity=alpha_sparsity,
             spectral_mode=args.spectral_mode,
             train_lossless=train_lossless,
+            paper_band_enable=bool(args.paper_band_enable),
+            paper_band_min_hz=paper_band_min,
+            paper_band_max_hz=paper_band_max,
             u=fixed_u,
             b=b_default,
             c_l=c_l_default,
@@ -530,10 +560,15 @@ def main() -> None:
                 batch_size=batch,
                 lr=args.lr,
                 gamma=gamma_used,
+                stability_gamma=stability_gamma,
                 train_lossless=train_lossless,
                 alpha_density=alpha_sparsity,
                 learn_io=False,
                 freq_bins_per_step=batch,
+                paper_band_enable=bool(args.paper_band_enable),
+                paper_band_min_hz=paper_band_min,
+                paper_band_max_hz=paper_band_max,
+                paper_band_debug=False,
                 spectral_mode=args.spectral_mode,
                 seed=args.seed,
                 dtype=dtype,
@@ -555,10 +590,15 @@ def main() -> None:
                 batch_size=batch,
                 lr=args.lr,
                 gamma=gamma_used,
+                stability_gamma=stability_gamma,
                 train_lossless=train_lossless,
                 alpha_density=alpha_sparsity,
                 learn_io=True,
                 freq_bins_per_step=batch,
+                paper_band_enable=bool(args.paper_band_enable),
+                paper_band_min_hz=paper_band_min,
+                paper_band_max_hz=paper_band_max,
+                paper_band_debug=False,
                 spectral_mode=args.spectral_mode,
                 seed=args.seed,
                 dtype=dtype,
