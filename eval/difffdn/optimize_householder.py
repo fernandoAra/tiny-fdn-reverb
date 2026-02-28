@@ -314,6 +314,7 @@ def main() -> None:
     parser.add_argument("--paper-band-max-hz", type=float, default=12000.0)
     parser.add_argument("--paper-band-debug", action="store_true")
     parser.add_argument("--paper-band-selfcheck", action="store_true")
+    parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--debug-eq18-sanity", action="store_true")
     parser.add_argument("--debug-k-map", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
@@ -395,6 +396,30 @@ def main() -> None:
         band_k_min = int(dbg_meta["band_k_min"])
         band_k_max = int(dbg_meta["band_k_max"])
     if args.paper_band_selfcheck:
+        bin_hz = fs / (2.0 * float(freq_grid_size))
+        band_min_hz_actual = float(k_to_hz(sr=fs, freq_grid_size=freq_grid_size, k=band_k_min, dtype=dtype).item())
+        band_max_hz_actual = float(k_to_hz(sr=fs, freq_grid_size=freq_grid_size, k=band_k_max, dtype=dtype).item())
+        if abs(band_min_hz_actual - paper_band_min) > (bin_hz + 1e-9):
+            raise RuntimeError("paper-band selfcheck failed: lower band edge exceeds one-bin tolerance")
+        if abs(band_max_hz_actual - paper_band_max) > (bin_hz + 1e-9):
+            raise RuntimeError("paper-band selfcheck failed: upper band edge exceeds one-bin tolerance")
+        dbg_rng = np.random.default_rng(int(args.seed))
+        sample_n = max(int(batch), 1)
+        mini_np = dbg_rng.choice(
+            band_pool.detach().cpu().numpy().astype(int),
+            size=sample_n,
+            replace=(sample_n > int(band_pool.numel())),
+        )
+        mini_hz = k_to_hz(
+            sr=fs,
+            freq_grid_size=freq_grid_size,
+            k=torch.as_tensor(mini_np, dtype=torch.int64),
+            dtype=dtype,
+        ).detach().cpu()
+        if float(torch.min(mini_hz).item()) < (paper_band_min - bin_hz):
+            raise RuntimeError("paper-band selfcheck failed: sampled minibatch min Hz is out of range")
+        if float(torch.max(mini_hz).item()) > (paper_band_max + bin_hz):
+            raise RuntimeError("paper-band selfcheck failed: sampled minibatch max Hz is out of range")
         print("[paper-band selfcheck] OK")
         return
 
@@ -406,7 +431,8 @@ def main() -> None:
         f"  stability_gamma={stability_gamma:.9f} gamma_train={gamma_train:.9f} "
         f"training_mode={training_mode} train_lossless={str(train_lossless).lower()}\n"
         f"  M={M} freq_grid_size={freq_grid_size} batch={batch} epochs={epochs} total_steps={total_steps} lr={args.lr}\n"
-        f"  seed={args.seed} spectral_mode={args.spectral_mode} alpha_density={alpha_sparsity:.6f} learn_io={str(bool(args.learn_io)).lower()}\n"
+        f"  seed={args.seed} spectral_mode={args.spectral_mode} alpha_density={alpha_sparsity:.6f} "
+        f"learn_io={str(bool(args.learn_io)).lower()} val_fraction={float(args.val_fraction):.2f}\n"
         f"  paper_band_enable={str(bool(args.paper_band_enable)).lower()} paper_band_min_hz={paper_band_min:.2f} paper_band_max_hz={paper_band_max:.2f} "
         f"band_k_pool_count={band_pool_count}"
     )
@@ -432,7 +458,8 @@ def main() -> None:
         paper_band_min_hz=paper_band_min,
         paper_band_max_hz=paper_band_max,
         paper_band_debug=bool(args.paper_band_debug),
-        val_split=0.2,
+        paper_band_selfcheck=bool(args.paper_band_selfcheck),
+        val_fraction=float(args.val_fraction),
         spectral_mode=args.spectral_mode,
         seed=args.seed,
         dtype=dtype,
@@ -483,6 +510,7 @@ def main() -> None:
         "band_k_min": int(band_k_min),
         "band_k_max": int(band_k_max),
         "k_to_hz_formula": "hz = k * sr / (2 * freq_grid_size)",
+        "val_fraction": float(args.val_fraction),
         "seed": int(args.seed),
         "gains": _to_float_list(gains_runtime),
         "gains_training": _to_float_list(result.gains),
