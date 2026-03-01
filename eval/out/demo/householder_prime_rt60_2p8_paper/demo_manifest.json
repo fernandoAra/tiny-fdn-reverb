@@ -1,0 +1,71 @@
+{
+  "timestamp_utc": "2026-02-28T16:10:17.405121+00:00",
+  "git_commit": "70578f2d2c8ff72e0a253a0247f7c8ac0797e5eb",
+  "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
+  "base_config_id": "householder_prime_rt60_2p8_paper",
+  "preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_prime_rt60_2p8_paper.json",
+  "sample_rate": 48000,
+  "stimulus": {
+    "type": "pink_noise",
+    "input_wav": null,
+    "seconds": 6.0,
+    "dry_level_dbfs": -18.0,
+    "conv_mode": "fft",
+    "seed": 0
+  },
+  "level_match": {
+    "method_requested": "lufs",
+    "method_used": "lufs",
+    "target_policy": "fixed",
+    "target_value": -23.61102494369125,
+    "target_lufs": -23.0,
+    "peak_limit_dbfs": -1.0,
+    "window_tmin": 0.05,
+    "window_tmax": 0.3
+  },
+  "repro_command": "eval/scripts/compare_fixed_vs_diff.py --preset eval/out/presets/householder_prime_rt60_2p8_paper.json --scope all --export-demo-wavs --demo-stimulus pink_noise --demo-seconds 6 --demo-dry-level-dbfs -18 --level-match-method lufs --level-match-target fixed --level-match-peak-limit-dbfs -1",
+  "modes": {
+    "fixed": {
+      "raw_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_fixed_raw.wav",
+      "matched_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_fixed_matched.wav",
+      "measured_lufs": -23.61102494369125,
+      "measured_rms_50_300ms_db": -28.921225117384765,
+      "gain_db_requested": 0.0,
+      "gain_db_applied_total": 0.0,
+      "peak_before_dbfs": -12.455283569684152,
+      "peak_after_dbfs": -12.455283569684152,
+      "peak_trim_db": 0.0,
+      "target_metric_value": -23.61102494369125,
+      "recommended_gain_db_to_match_fixed_rms50_300": 0.0,
+      "recommended_gain_db_to_match_fixed_lufs": 0.0
+    },
+    "u_only": {
+      "raw_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_u_only_raw.wav",
+      "matched_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_u_only_matched.wav",
+      "measured_lufs": -22.387782424943744,
+      "measured_rms_50_300ms_db": -27.638874363770086,
+      "gain_db_requested": -1.2232425187475044,
+      "gain_db_applied_total": -1.2232425187475044,
+      "peak_before_dbfs": -10.497219230845406,
+      "peak_after_dbfs": -11.720461749592912,
+      "peak_trim_db": 0.0,
+      "target_metric_value": -23.61102494369125,
+      "recommended_gain_db_to_match_fixed_rms50_300": -1.2823507536146792,
+      "recommended_gain_db_to_match_fixed_lufs": -1.2232425187475044
+    },
+    "full": {
+      "raw_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_full_raw.wav",
+      "matched_wav": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/demo/householder_prime_rt60_2p8_paper/demo_householder_prime_rt60_2p8_paper_full_matched.wav",
+      "measured_lufs": -15.316659211361548,
+      "measured_rms_50_300ms_db": -20.0938578795807,
+      "gain_db_requested": -8.2943657323297,
+      "gain_db_applied_total": -8.2943657323297,
+      "peak_before_dbfs": -5.053197883263298,
+      "peak_after_dbfs": -13.347563615593,
+      "peak_trim_db": 0.0,
+      "target_metric_value": -23.61102494369125,
+      "recommended_gain_db_to_match_fixed_rms50_300": -8.827367237804065,
+      "recommended_gain_db_to_match_fixed_lufs": -8.2943657323297
+    }
+  }
+}

@@ -20,14 +20,14 @@
   "gamma": 0.9999486043321197,
   "gamma_used": 0.9999486043321197,
   "gamma_source": "rt60_target",
-  "train_lossless": false,
-  "optimize_with_decay": true,
-  "gamma_train": 0.9999486043321197,
+  "train_lossless": true,
+  "optimize_with_decay": false,
+  "gamma_train": 1.0,
   "alpha_density": 0.05,
   "alpha_sparsity": 0.05,
   "spectral_mode": "unity",
   "freq_bins_per_step": 2000,
-  "learn_io": false,
+  "learn_io": true,
   "seed": 4,
   "gains": [
     0.9258490356932044,
@@ -36,10 +36,10 @@
     0.7967406292535046
   ],
   "gains_training": [
-    0.9258490356932044,
-    0.8849973378134331,
-    0.8476019833822931,
-    0.7967406292535046
+    1.0,
+    1.0,
+    1.0,
+    1.0
   ],
   "matrix_type": "householder",
   "fixed_u": [
@@ -49,10 +49,10 @@
     0.5
   ],
   "u": [
-    -0.2782283811464656,
-    0.18265331228852857,
-    0.8336279456202162,
-    0.4407847362553112
+    -0.5533967912671014,
+    0.0696044992912495,
+    0.7775355733278949,
+    0.2904232037963782
   ],
   "b": [
     0.25,
@@ -73,9 +73,9 @@
     -0.5
   ],
   "losses": {
-    "total": 0.49179794181409664,
-    "spectral": 0.47682588362465406,
-    "sparsity": 0.2994411637888512
+    "total": 18794092236.7963,
+    "spectral": 18794092236.77301,
+    "sparsity": 0.4657654569610499
   },
   "comparison_mode": "u_only",
   "mod_depth": 0.0,

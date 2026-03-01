@@ -17,14 +17,17 @@ import csv
 import datetime as dt
 import json
 import math
+import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import signal as scipy_signal
 from scipy.io import wavfile
 
 EPS = 1e-12
@@ -81,6 +84,7 @@ SUMMARY_FIELDS = [
     "io_diff_b_maxabs_vs_default",
     "io_diff_cL_maxabs_vs_default",
     "io_diff_cR_maxabs_vs_default",
+    "scenario_has_learned_io",
     "full_has_learned_io",
     "spectral_loss_like",
     "spectral_loss_like_50_12k",
@@ -94,6 +98,10 @@ SUMMARY_FIELDS = [
     "echo_density_events_per_s_50_300ms",
     "echo_events_count_50_300ms",
     "echo_window_seconds",
+    "wet_rms_db_50_300ms",
+    "wet_peak_db_50_300ms",
+    "wet_rms_db_full",
+    "wet_peak_db_full",
     "sanity_max_db_error",
     "sanity_max_db_error_hz",
     "sanity_max_db_error_a_db",
@@ -101,6 +109,16 @@ SUMMARY_FIELDS = [
     "sanity_max_db_error_bin",
     "paper_band_min_hz",
     "paper_band_max_hz",
+    "demo_measured_lufs",
+    "demo_target_lufs",
+    "demo_gain_db_applied",
+    "demo_peak_after_dbfs",
+    "demo_method_requested",
+    "demo_method_used",
+    "demo_measured_rms50_300_db",
+    "demo_target_rms50_300_db",
+    "recommended_gain_db_to_match_fixed_rms50_300",
+    "recommended_gain_db_to_match_fixed_lufs",
 ]
 
 
@@ -136,9 +154,14 @@ class ScenarioResult:
     echo_density_events_per_s_50_300ms: float
     echo_events_count_50_300ms: int
     echo_window_seconds: float
+    wet_rms_db_50_300ms: float
+    wet_peak_db_50_300ms: float
+    wet_rms_db_full: float
+    wet_peak_db_full: float
     io_diff_b_maxabs_vs_default: float
     io_diff_cL_maxabs_vs_default: float
     io_diff_cR_maxabs_vs_default: float
+    scenario_has_learned_io: bool
     full_has_learned_io: bool
     sanity_max_db_error: float
     sanity_max_db_error_hz: float
@@ -146,6 +169,16 @@ class ScenarioResult:
     sanity_max_db_error_b_db: float
     sanity_max_db_error_bin: int
     sanity_valid_count: int
+    demo_measured_lufs: float = math.nan
+    demo_target_lufs: float = math.nan
+    demo_gain_db_applied: float = math.nan
+    demo_peak_after_dbfs: float = math.nan
+    demo_method_requested: str = ""
+    demo_method_used: str = ""
+    demo_measured_rms50_300_db: float = math.nan
+    demo_target_rms50_300_db: float = math.nan
+    recommended_gain_db_to_match_fixed_rms50_300: float = math.nan
+    recommended_gain_db_to_match_fixed_lufs: float = math.nan
 
 
 def _parse_delay_csv(text: str) -> List[int]:
@@ -431,6 +464,427 @@ def _load_wav_channel(
     return int(sr), x
 
 
+def _slice_by_time(x: np.ndarray, sr: int, tmin: float, tmax: float) -> np.ndarray:
+    total_s = float(x.size) / max(float(sr), 1.0)
+    start_s = min(max(float(tmin), 0.0), total_s)
+    stop_s = min(max(float(tmax), 0.0), total_s)
+    if stop_s <= start_s:
+        return np.asarray([], dtype=np.float64)
+    start_i = int(math.floor(start_s * float(sr)))
+    stop_i = int(math.ceil(stop_s * float(sr)))
+    start_i = max(0, min(start_i, x.size))
+    stop_i = max(0, min(stop_i, x.size))
+    if stop_i <= start_i:
+        return np.asarray([], dtype=np.float64)
+    return np.asarray(x[start_i:stop_i], dtype=np.float64)
+
+
+def _rms(x: np.ndarray, eps: float) -> float:
+    if x.size == 0:
+        return math.nan
+    return float(math.sqrt(float(np.mean(np.square(x, dtype=np.float64))) + float(eps)))
+
+
+def _dbfs(amp: float, eps: float) -> float:
+    if not math.isfinite(float(amp)):
+        return math.nan
+    return float(20.0 * math.log10(max(float(amp), float(eps))))
+
+
+def _rms_dbfs(x: np.ndarray, eps: float) -> float:
+    return _dbfs(_rms(x, eps), eps)
+
+
+def _peak_dbfs(x: np.ndarray, eps: float) -> float:
+    if x.size == 0:
+        return math.nan
+    return _dbfs(float(np.max(np.abs(x))), eps)
+
+
+def compute_rms_db(x: np.ndarray) -> float:
+    return _rms_dbfs(np.asarray(x, dtype=np.float64), EPS)
+
+
+def compute_windowed_rms_db_stereo(
+    y_l: np.ndarray,
+    y_r: np.ndarray,
+    sr: int,
+    t0: float = 0.05,
+    t1: float = 0.30,
+) -> float:
+    seg_l = _slice_by_time(np.asarray(y_l, dtype=np.float64), sr, t0, t1)
+    seg_r = _slice_by_time(np.asarray(y_r, dtype=np.float64), sr, t0, t1)
+    n = min(seg_l.size, seg_r.size)
+    if n <= 0:
+        return math.nan
+    energy = float(np.mean(0.5 * (seg_l[:n] * seg_l[:n] + seg_r[:n] * seg_r[:n])))
+    return float(20.0 * math.log10(max(math.sqrt(max(energy, 0.0) + EPS), EPS)))
+
+
+def apply_gain_stereo(y_l: np.ndarray, y_r: np.ndarray, gain_db: float) -> Tuple[np.ndarray, np.ndarray]:
+    gain = float(10.0 ** (float(gain_db) / 20.0))
+    return (
+        np.asarray(y_l, dtype=np.float64) * gain,
+        np.asarray(y_r, dtype=np.float64) * gain,
+    )
+
+
+def peak_dbfs_stereo(y_l: np.ndarray, y_r: np.ndarray) -> float:
+    peak = max(
+        float(np.max(np.abs(np.asarray(y_l, dtype=np.float64)))),
+        float(np.max(np.abs(np.asarray(y_r, dtype=np.float64)))),
+    )
+    return float(20.0 * math.log10(max(peak, EPS)))
+
+
+def _try_integrated_lufs(y_stereo: np.ndarray, sr: int) -> float | None:
+    try:
+        import pyloudnorm as pyln  # type: ignore
+    except Exception:
+        return None
+    try:
+        meter = pyln.Meter(int(sr))
+        return float(meter.integrated_loudness(np.asarray(y_stereo, dtype=np.float64)))
+    except Exception:
+        return None
+
+
+def _apply_peak_safety_trim(
+    y_l: np.ndarray,
+    y_r: np.ndarray,
+    peak_limit_dbfs: float,
+) -> Tuple[np.ndarray, np.ndarray, float, float, float]:
+    peak_before = peak_dbfs_stereo(y_l, y_r)
+    extra_trim_db = 0.0
+    if np.isfinite(peak_before) and peak_before > float(peak_limit_dbfs):
+        extra_trim_db = float(peak_limit_dbfs) - float(peak_before)
+        y_l, y_r = apply_gain_stereo(y_l, y_r, extra_trim_db)
+    peak_after = peak_dbfs_stereo(y_l, y_r)
+    if np.isfinite(peak_after) and peak_after > float(peak_limit_dbfs) + 0.01:
+        raise RuntimeError(
+            f"Peak limiter failed: peak_after={peak_after:.3f} dBFS > "
+            f"{float(peak_limit_dbfs):.3f} dBFS"
+        )
+    return y_l, y_r, float(extra_trim_db), float(peak_before), float(peak_after)
+
+
+def _load_wav_stereo(path: Path) -> Tuple[int, np.ndarray]:
+    sr, data = wavfile.read(str(path))
+    x = np.asarray(data)
+    if np.issubdtype(x.dtype, np.integer):
+        info = np.iinfo(x.dtype)
+        full_scale = float(max(abs(info.min), info.max))
+        x = x.astype(np.float64) / full_scale
+    else:
+        x = x.astype(np.float64)
+    if x.ndim == 1:
+        x = np.column_stack([x, x])
+    elif x.ndim == 2 and x.shape[1] == 1:
+        x = np.column_stack([x[:, 0], x[:, 0]])
+    elif x.ndim != 2 or x.shape[1] < 2:
+        raise RuntimeError(f"Unsupported WAV shape for stereo load: {path} shape={x.shape}")
+    elif x.shape[1] > 2:
+        x = x[:, :2]
+    return int(sr), x
+
+
+def _write_wav_stereo_float(path: Path, sr: int, y_stereo: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wavfile.write(str(path), int(sr), np.asarray(y_stereo, dtype=np.float32))
+
+
+def _normalize_mono_to_rms_dbfs(x: np.ndarray, target_dbfs: float) -> np.ndarray:
+    current_db = compute_rms_db(x)
+    if not np.isfinite(current_db):
+        return np.asarray(x, dtype=np.float64)
+    gain_db = float(target_dbfs) - float(current_db)
+    gain = float(10.0 ** (gain_db / 20.0))
+    return np.asarray(x, dtype=np.float64) * gain
+
+
+def _pink_noise(n: int, np_rng: np.random.Generator) -> np.ndarray:
+    white = np_rng.standard_normal(int(max(n, 1)))
+    spec = np.fft.rfft(white)
+    scale = np.ones(spec.size, dtype=np.float64)
+    if scale.size > 1:
+        scale[1:] = 1.0 / np.sqrt(np.arange(1, scale.size, dtype=np.float64))
+    scale[0] = 0.0
+    pink = np.fft.irfft(spec * scale, n=white.size)
+    rms = math.sqrt(float(np.mean(pink * pink)) + EPS)
+    return pink / max(rms, EPS)
+
+
+def _click_train(n: int, sr: int) -> np.ndarray:
+    x = np.zeros(int(max(n, 1)), dtype=np.float64)
+    start = int(0.05 * float(sr))
+    spacing = max(1, int(0.15 * float(sr)))
+    for i in range(5):
+        idx = start + i * spacing
+        if idx < x.size:
+            x[idx] = 1.0
+    return x
+
+
+def _build_demo_stimulus(
+    *,
+    stimulus: str,
+    demo_input_wav: str | None,
+    n_samples: int,
+    sr: int,
+    dry_level_dbfs: float,
+    seed: int,
+) -> np.ndarray:
+    np_rng = np.random.default_rng(int(seed))
+    kind = str(stimulus)
+    if kind == "pink_noise":
+        x = _pink_noise(int(n_samples), np_rng)
+    elif kind == "click_train":
+        x = _click_train(int(n_samples), int(sr))
+    elif kind == "input_wav":
+        if not demo_input_wav:
+            raise ValueError("--demo-input-wav is required when --demo-stimulus=input_wav")
+        input_path = Path(demo_input_wav).expanduser().resolve()
+        in_sr, y = _load_wav_stereo(input_path)
+        if int(in_sr) != int(sr):
+            raise RuntimeError(
+                f"Demo input WAV sample rate mismatch: {input_path} is {in_sr}, expected {sr}"
+            )
+        x = np.mean(y, axis=1)
+        if x.size < int(n_samples):
+            x = np.pad(x, (0, int(n_samples) - x.size))
+        else:
+            x = x[: int(n_samples)]
+    else:
+        raise ValueError(f"Unsupported demo stimulus: {stimulus}")
+    return _normalize_mono_to_rms_dbfs(np.asarray(x, dtype=np.float64), float(dry_level_dbfs))
+
+
+def _convolve_ir(
+    dry: np.ndarray,
+    ir: np.ndarray,
+    *,
+    n_out: int,
+    conv_mode: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if str(conv_mode) == "fft":
+        wet_l = scipy_signal.fftconvolve(dry, ir[:, 0], mode="full")
+        wet_r = scipy_signal.fftconvolve(dry, ir[:, 1], mode="full")
+    elif str(conv_mode) == "direct":
+        wet_l = np.convolve(dry, ir[:, 0], mode="full")
+        wet_r = np.convolve(dry, ir[:, 1], mode="full")
+    else:
+        raise ValueError(f"Unsupported demo conv mode: {conv_mode}")
+    wet_l = np.asarray(wet_l[: int(n_out)], dtype=np.float64)
+    wet_r = np.asarray(wet_r[: int(n_out)], dtype=np.float64)
+    if wet_l.size < int(n_out):
+        wet_l = np.pad(wet_l, (0, int(n_out) - wet_l.size))
+    if wet_r.size < int(n_out):
+        wet_r = np.pad(wet_r, (0, int(n_out) - wet_r.size))
+    return wet_l, wet_r
+
+
+def _export_demo_bundle(
+    *,
+    demo_root: Path,
+    base_config_id: str,
+    preset_path: Path,
+    wav_paths: Dict[str, Path],
+    mode_keys: Sequence[str],
+    sr_expected: int,
+    seed: int,
+    stimulus: str,
+    demo_input_wav: str | None,
+    demo_seconds: float,
+    demo_dry_level_dbfs: float,
+    demo_conv_mode: str,
+    level_match_method: str,
+    level_match_target: str,
+    level_match_target_lufs: float,
+    level_match_peak_limit_dbfs: float,
+    require_lufs: bool,
+    level_tmin: float,
+    level_tmax: float,
+    git_commit: str,
+    repro_command: str,
+) -> Dict[str, object]:
+    demo_root.mkdir(parents=True, exist_ok=True)
+    n_out = max(1, int(round(float(demo_seconds) * float(sr_expected))))
+    dry = _build_demo_stimulus(
+        stimulus=stimulus,
+        demo_input_wav=demo_input_wav,
+        n_samples=n_out,
+        sr=sr_expected,
+        dry_level_dbfs=demo_dry_level_dbfs,
+        seed=seed,
+    )
+
+    raw_by_mode: Dict[str, np.ndarray] = {}
+    mode_info: Dict[str, Dict[str, object]] = {}
+    for mode_key in mode_keys:
+        ir_sr, ir_stereo = _load_wav_stereo(wav_paths[mode_key])
+        if int(ir_sr) != int(sr_expected):
+            raise RuntimeError(
+                f"IR sample rate mismatch for {mode_key}: {ir_sr} vs expected {sr_expected}"
+            )
+        wet_l, wet_r = _convolve_ir(dry, ir_stereo, n_out=n_out, conv_mode=demo_conv_mode)
+        if wet_l.size != wet_r.size or wet_l.size != n_out:
+            raise RuntimeError(f"Demo output length mismatch for {mode_key}: {wet_l.size}, {wet_r.size}, {n_out}")
+        wet_stereo = np.column_stack([wet_l, wet_r]).astype(np.float64, copy=False)
+        raw_by_mode[mode_key] = wet_stereo
+        raw_path = demo_root / f"demo_{_slug(base_config_id)}_{mode_key}_raw.wav"
+        _write_wav_stereo_float(raw_path, sr_expected, wet_stereo)
+        mode_info[mode_key] = {
+            "raw_wav": str(raw_path),
+            "matched_wav": "",
+            "measured_lufs": None,
+            "measured_rms_50_300ms_db": float(
+                compute_windowed_rms_db_stereo(wet_stereo[:, 0], wet_stereo[:, 1], sr_expected, level_tmin, level_tmax)
+            ),
+            "gain_db_requested": 0.0,
+            "gain_db_applied_total": 0.0,
+            "peak_before_dbfs": float(peak_dbfs_stereo(wet_stereo[:, 0], wet_stereo[:, 1])),
+            "peak_after_dbfs": float(peak_dbfs_stereo(wet_stereo[:, 0], wet_stereo[:, 1])),
+        }
+
+    method_requested = str(level_match_method)
+    method_used = method_requested
+    if method_requested == "lufs":
+        all_lufs = True
+        for mode_key in mode_keys:
+            measured = _try_integrated_lufs(raw_by_mode[mode_key], sr_expected)
+            mode_info[mode_key]["measured_lufs"] = None if measured is None else float(measured)
+            all_lufs = all_lufs and (measured is not None)
+        if not all_lufs:
+            install_hint = "Install: python3 -m pip install pyloudnorm"
+            if bool(require_lufs):
+                raise RuntimeError(
+                    "LUFS requested but pyloudnorm missing or failed. "
+                    + install_hint
+                )
+            print("[WARN] LUFS requested but pyloudnorm missing or failed. Falling back to rms_50_300ms.")
+            print(install_hint)
+            method_used = "rms_50_300ms"
+    else:
+        method_used = "rms_50_300ms"
+
+    if str(level_match_target) != "target_lufs" and str(level_match_target) not in mode_keys:
+        raise RuntimeError(
+            f"Requested level-match target '{level_match_target}' is not present in current scope {list(mode_keys)}"
+        )
+
+    if method_used == "lufs":
+        if str(level_match_target) == "target_lufs":
+            target_metric = float(level_match_target_lufs)
+        else:
+            target_metric = float(mode_info[str(level_match_target)]["measured_lufs"])
+    else:
+        if str(level_match_target) == "target_lufs":
+            target_metric = float(level_match_target_lufs)
+        else:
+            target_metric = float(mode_info[str(level_match_target)]["measured_rms_50_300ms_db"])
+
+    if method_used == "lufs":
+        print("Demo level-match method: lufs (pyloudnorm)")
+    else:
+        print("Demo level-match method: rms_50_300ms (fallback)")
+
+    fixed_rms_ref = float(mode_info["fixed"]["measured_rms_50_300ms_db"])
+    fixed_lufs_ref = (
+        math.nan
+        if mode_info["fixed"]["measured_lufs"] is None
+        else float(mode_info["fixed"]["measured_lufs"])
+    )
+
+    for mode_key in mode_keys:
+        wet = raw_by_mode[mode_key]
+        if method_used == "lufs":
+            measured_metric = mode_info[mode_key]["measured_lufs"]
+            if measured_metric is None or not np.isfinite(float(measured_metric)):
+                raise RuntimeError(f"LUFS measurement missing for mode {mode_key}")
+            gain_db_requested = float(target_metric) - float(measured_metric)
+        else:
+            measured_metric = float(mode_info[mode_key]["measured_rms_50_300ms_db"])
+            if not np.isfinite(float(measured_metric)):
+                raise RuntimeError(f"RMS demo metric missing for mode {mode_key}")
+            gain_db_requested = float(target_metric) - float(measured_metric)
+
+        wet_l_g, wet_r_g = apply_gain_stereo(wet[:, 0], wet[:, 1], gain_db_requested)
+        wet_l_f, wet_r_f, trim_db, _peak_before_lim, peak_after = _apply_peak_safety_trim(
+            wet_l_g,
+            wet_r_g,
+            float(level_match_peak_limit_dbfs),
+        )
+        gain_db_applied_total = float(gain_db_requested + trim_db)
+        matched = np.column_stack([wet_l_f, wet_r_f]).astype(np.float64, copy=False)
+        matched_path = demo_root / f"demo_{_slug(base_config_id)}_{mode_key}_matched.wav"
+        _write_wav_stereo_float(matched_path, sr_expected, matched)
+
+        mode_info[mode_key]["matched_wav"] = str(matched_path)
+        mode_info[mode_key]["gain_db_requested"] = float(gain_db_requested)
+        mode_info[mode_key]["gain_db_applied_total"] = float(gain_db_applied_total)
+        mode_info[mode_key]["peak_trim_db"] = float(trim_db)
+        mode_info[mode_key]["peak_after_dbfs"] = float(peak_after)
+        mode_info[mode_key]["target_metric_value"] = float(target_metric)
+        mode_info[mode_key]["recommended_gain_db_to_match_fixed_rms50_300"] = (
+            float(fixed_rms_ref) - float(mode_info[mode_key]["measured_rms_50_300ms_db"])
+        )
+        mode_info[mode_key]["recommended_gain_db_to_match_fixed_lufs"] = (
+            math.nan
+            if (
+                mode_info[mode_key]["measured_lufs"] is None
+                or not np.isfinite(float(fixed_lufs_ref))
+            )
+            else float(fixed_lufs_ref) - float(mode_info[mode_key]["measured_lufs"])
+        )
+
+        lufs_txt = (
+            f"{float(mode_info[mode_key]['measured_lufs']):.2f} LUFS"
+            if mode_info[mode_key]["measured_lufs"] is not None
+            else "n/a"
+        )
+        rms_txt = float(mode_info[mode_key]["measured_rms_50_300ms_db"])
+        print(
+            f"  [demo] {mode_key}: lufs={lufs_txt}, rms50-300={rms_txt:.2f} dB, "
+            f"gain={gain_db_applied_total:.2f} dB, peak_after={float(peak_after):.2f} dBFS"
+        )
+
+    manifest = {
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "git_commit": git_commit,
+        "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
+        "base_config_id": base_config_id,
+        "preset_path": str(preset_path),
+        "sample_rate": int(sr_expected),
+        "stimulus": {
+            "type": str(stimulus),
+            "input_wav": None if not demo_input_wav else str(Path(demo_input_wav).expanduser().resolve()),
+            "seconds": float(demo_seconds),
+            "dry_level_dbfs": float(demo_dry_level_dbfs),
+            "conv_mode": str(demo_conv_mode),
+            "seed": int(seed),
+        },
+        "level_match": {
+            "method_requested": method_requested,
+            "method_used": method_used,
+            "target_policy": str(level_match_target),
+            "target_value": None if not np.isfinite(float(target_metric)) else float(target_metric),
+            "target_lufs": float(level_match_target_lufs),
+            "peak_limit_dbfs": float(level_match_peak_limit_dbfs),
+            "window_tmin": float(level_tmin),
+            "window_tmax": float(level_tmax),
+        },
+        "repro_command": repro_command,
+        "modes": mode_info,
+    }
+    manifest_path = demo_root / "demo_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    return {
+        "manifest_path": str(manifest_path),
+        "manifest": manifest,
+        "method_used": method_used,
+    }
+
+
 def _schroeder_edc_db(x: np.ndarray) -> np.ndarray:
     energy = np.cumsum((x[::-1] ** 2))[::-1]
     energy = np.maximum(energy, 1e-20)
@@ -596,6 +1050,7 @@ def _echo_density_curve(
     sr: int,
     *,
     threshold_db: float,
+    mad_k: float,
     min_spacing_ms: float,
     window_ms: float,
     hop_ms: float,
@@ -606,25 +1061,38 @@ def _echo_density_curve(
     if env.size == 0:
         return t_env, np.zeros_like(t_env), math.nan, 0, max(float(tmax) - float(tmin), 1e-12)
 
-    thr = float(np.max(env) * (10.0 ** (float(threshold_db) / 20.0)))
+    early_mask = t_env <= 0.05
+    ref = env[early_mask] if np.any(early_mask) else env[: max(1, min(8, env.size))]
+    ref_scale = float(np.median(ref))
+    if not np.isfinite(ref_scale) or ref_scale <= 1e-12:
+        ref_scale = float(np.max(ref))
+    if not np.isfinite(ref_scale) or ref_scale <= 1e-12:
+        ref_scale = 1.0
+    env_n = env / ref_scale
+
+    med = float(np.median(env_n))
+    mad = float(np.median(np.abs(env_n - med)) + 1e-12)
+    thr = float(med + float(mad_k) * mad)
+    # Legacy threshold_db is retained for CLI compatibility only.
+    _ = threshold_db
     min_spacing_s = max(float(min_spacing_ms), 0.0) * 1e-3
     half_win_s = 0.5 * max(float(window_ms), 1e-3) * 1e-3
     win_s = max(float(window_ms), 1e-3) * 1e-3
 
     peak_times: List[float] = []
     last_peak_t = -1e12
-    if env.size >= 3:
-        for i in range(1, env.size - 1):
-            if env[i] < thr:
+    if env_n.size >= 3:
+        for i in range(1, env_n.size - 1):
+            if env_n[i] < thr:
                 continue
-            if env[i] < env[i - 1] or env[i] < env[i + 1]:
+            if env_n[i] < env_n[i - 1] or env_n[i] < env_n[i + 1]:
                 continue
             ti = float(t_env[i])
             if (ti - last_peak_t) < min_spacing_s:
                 continue
             peak_times.append(ti)
             last_peak_t = ti
-    elif env.size >= 1 and env[0] >= thr:
+    elif env_n.size >= 1 and env_n[0] >= thr:
         peak_times.append(float(t_env[0]))
 
     curve = np.zeros_like(t_env)
@@ -1091,14 +1559,19 @@ def _write_sidecar(
     nfft_used: int,
     aligned_length_samples: int,
     echo_density_threshold_db: float,
+    echo_density_mad_k: float,
     echo_density_min_spacing_ms: float,
     echo_density_window_ms: float,
     echo_density_hop_ms: float,
     echo_density_tmin: float,
     echo_density_tmax: float,
+    level_tmin: float,
+    level_tmax: float,
+    level_eps: float,
     paper_band_min_hz: float,
     paper_band_max_hz: float,
     full_has_learned_io: bool,
+    scenario_has_learned_io: bool,
     io_diff_b_maxabs_vs_default: float,
     io_diff_cL_maxabs_vs_default: float,
     io_diff_cR_maxabs_vs_default: float,
@@ -1152,17 +1625,26 @@ def _write_sidecar(
         "diffusion_proxy_summary_window_s": [0.05, 0.30],
         "echo_density_proxy_name": "envelope_peak_event_rate",
         "echo_density_proxy_definition": (
-            "Short-time RMS envelope peak/event rate with dynamic threshold and "
-            "minimum peak spacing. Summary is mean events/s in the configured window."
+            "Short-time RMS envelope peak/event rate with envelope normalization on first "
+            "50 ms and threshold = median(env) + k*MAD(env). Summary is events/s in window."
         ),
         "echo_density_threshold_db": float(echo_density_threshold_db),
+        "echo_density_mad_k": float(echo_density_mad_k),
         "echo_density_min_spacing_ms": float(echo_density_min_spacing_ms),
         "echo_density_window_ms": float(echo_density_window_ms),
         "echo_density_hop_ms": float(echo_density_hop_ms),
         "echo_density_summary_window_s": [float(echo_density_tmin), float(echo_density_tmax)],
+        "level_tmin": float(level_tmin),
+        "level_tmax": float(level_tmax),
+        "level_eps": float(level_eps),
+        "level_metrics_definition": (
+            "rms_db = 20log10(sqrt(mean(x^2))+eps); peak_db = 20log10(max(abs(x))+eps); "
+            "x is normalized per-run by common peak across scenarios."
+        ),
         "paper_band_hz": [float(paper_band_min_hz), float(paper_band_max_hz)],
         "paper_band_metrics": ["spectral_loss_like_50_12k", "spectral_dev_db_50_12k"],
         "full_has_learned_io": bool(full_has_learned_io),
+        "scenario_has_learned_io": bool(scenario_has_learned_io),
         "io_diff_b_maxabs_vs_default": float(io_diff_b_maxabs_vs_default),
         "io_diff_cL_maxabs_vs_default": float(io_diff_cL_maxabs_vs_default),
         "io_diff_cR_maxabs_vs_default": float(io_diff_cR_maxabs_vs_default),
@@ -1185,7 +1667,13 @@ def _write_run_payload(
     results: Dict[str, ScenarioResult],
     paper_band_min_hz: float,
     paper_band_max_hz: float,
+    level_tmin: float,
+    level_tmax: float,
+    level_eps: float,
     full_has_learned_io: bool,
+    training_metadata: Dict[str, object],
+    warnings: List[str],
+    demo_metadata: Dict[str, object] | None,
 ) -> None:
     payload = {
         "config_id": base_config_id,
@@ -1197,9 +1685,22 @@ def _write_run_payload(
                 "spectral_dev_db_50_12k",
             ],
         },
+        "level_metrics": {
+            "tmin_s": float(level_tmin),
+            "tmax_s": float(level_tmax),
+            "eps": float(level_eps),
+            "definition": (
+                "rms_db = 20log10(sqrt(mean(x^2))+eps); peak_db = 20log10(max(abs(x))+eps); "
+                "x is normalized per-run by common peak across scenarios."
+            ),
+        },
         "full_has_learned_io": bool(full_has_learned_io),
+        "training": dict(training_metadata),
+        "warnings": list(warnings),
         "modes": {},
     }
+    if demo_metadata is not None:
+        payload["demo"] = dict(demo_metadata)
     for mode_key in mode_keys:
         if mode_key not in results:
             continue
@@ -1218,9 +1719,28 @@ def _write_run_payload(
                 "echo_density_events_per_s_50_300ms": float(r.echo_density_events_per_s_50_300ms),
                 "echo_events_count_50_300ms": int(r.echo_events_count_50_300ms),
                 "echo_window_seconds": float(r.echo_window_seconds),
+                "wet_rms_db_50_300ms": float(r.wet_rms_db_50_300ms),
+                "wet_peak_db_50_300ms": float(r.wet_peak_db_50_300ms),
+                "wet_rms_db_full": float(r.wet_rms_db_full),
+                "wet_peak_db_full": float(r.wet_peak_db_full),
+                "demo_measured_lufs": float(r.demo_measured_lufs),
+                "demo_target_lufs": float(r.demo_target_lufs),
+                "demo_gain_db_applied": float(r.demo_gain_db_applied),
+                "demo_peak_after_dbfs": float(r.demo_peak_after_dbfs),
+                "demo_method_requested": str(r.demo_method_requested),
+                "demo_method_used": str(r.demo_method_used),
+                "demo_measured_rms50_300_db": float(r.demo_measured_rms50_300_db),
+                "demo_target_rms50_300_db": float(r.demo_target_rms50_300_db),
+                "recommended_gain_db_to_match_fixed_rms50_300": float(
+                    r.recommended_gain_db_to_match_fixed_rms50_300
+                ),
+                "recommended_gain_db_to_match_fixed_lufs": float(
+                    r.recommended_gain_db_to_match_fixed_lufs
+                ),
                 "io_diff_b_maxabs_vs_default": float(r.io_diff_b_maxabs_vs_default),
                 "io_diff_cL_maxabs_vs_default": float(r.io_diff_cL_maxabs_vs_default),
                 "io_diff_cR_maxabs_vs_default": float(r.io_diff_cR_maxabs_vs_default),
+                "scenario_has_learned_io": bool(r.scenario_has_learned_io),
                 "full_has_learned_io": bool(r.full_has_learned_io),
                 "sanity_max_db_error": float(r.sanity_max_db_error),
                 "sanity_max_db_error_hz": float(r.sanity_max_db_error_hz),
@@ -1301,7 +1821,13 @@ def parse_args() -> argparse.Namespace:
         "--echo-density-threshold-db",
         type=float,
         default=-30.0,
-        help="Dynamic threshold for echo-density event detection (dB relative to max envelope)",
+        help="Legacy threshold option kept for compatibility (not used in MAD-threshold mode).",
+    )
+    parser.add_argument(
+        "--echo-density-mad-k",
+        type=float,
+        default=3.0,
+        help="Echo-density threshold multiplier: threshold = median(env) + k*MAD(env)",
     )
     parser.add_argument(
         "--echo-density-min-spacing-ms",
@@ -1332,6 +1858,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.30,
         help="Summary window end for echo-density metric (s)",
+    )
+    parser.add_argument(
+        "--level-tmin",
+        type=float,
+        default=0.05,
+        help="Level-metric summary window start (s)",
+    )
+    parser.add_argument(
+        "--level-tmax",
+        type=float,
+        default=0.30,
+        help="Level-metric summary window end (s)",
+    )
+    parser.add_argument(
+        "--level-eps",
+        type=float,
+        default=1e-12,
+        help="Log-floor epsilon for RMS/peak dB calculations",
     )
     parser.add_argument(
         "--trim-leading-silence",
@@ -1365,11 +1909,84 @@ def parse_args() -> argparse.Namespace:
         default="eval/figs/summary_fixed_vs_diff.csv",
         help="Main summary CSV path",
     )
+    parser.add_argument(
+        "--export-demo-wavs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Export offline demo WAVs using rendered IRs (default: disabled)",
+    )
+    parser.add_argument(
+        "--demo-out-dir",
+        default="eval/out/demo",
+        help="Output folder for demo playback exports",
+    )
+    parser.add_argument(
+        "--demo-stimulus",
+        choices=["pink_noise", "click_train", "input_wav"],
+        default="pink_noise",
+        help="Dry stimulus used for demo playback renders",
+    )
+    parser.add_argument(
+        "--demo-input-wav",
+        default=None,
+        help="Input WAV path when --demo-stimulus=input_wav",
+    )
+    parser.add_argument(
+        "--demo-seconds",
+        type=float,
+        default=6.0,
+        help="Demo output duration in seconds",
+    )
+    parser.add_argument(
+        "--demo-dry-level-dbfs",
+        type=float,
+        default=-18.0,
+        help="Target RMS level for dry stimulus before convolution",
+    )
+    parser.add_argument(
+        "--demo-conv-mode",
+        choices=["fft", "direct"],
+        default="fft",
+        help="Convolution mode for demo playback export",
+    )
+    parser.add_argument(
+        "--level-match-method",
+        choices=["lufs", "rms_50_300ms"],
+        default="lufs",
+        help="Level-match method for demo playback exports",
+    )
+    parser.add_argument(
+        "--level-match-target",
+        choices=["fixed", "u_only", "full", "target_lufs"],
+        default="fixed",
+        help="Target policy for demo playback level matching",
+    )
+    parser.add_argument(
+        "--level-match-target-lufs",
+        type=float,
+        default=-23.0,
+        help="Target LUFS value when --level-match-target=target_lufs",
+    )
+    parser.add_argument(
+        "--level-match-peak-limit-dbfs",
+        type=float,
+        default=-1.0,
+        help="Peak safety ceiling applied after demo gain matching",
+    )
+    parser.add_argument(
+        "--require-lufs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Error out if LUFS matching is requested but pyloudnorm is unavailable",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    repro_command = " ".join(shlex.quote(x) for x in sys.argv)
+    print("[Repro command]")
+    print("  " + repro_command)
     np.random.seed(int(args.seed))
     repo_root = Path(__file__).resolve().parents[2]
     preset_paths = _find_presets_from_args(args)
@@ -1381,6 +1998,7 @@ def main() -> None:
     fig_dir = (repo_root / args.fig_dir).resolve()
     summary_csv = (repo_root / args.summary_csv).resolve()
     summary_table_csv = fig_dir / "fixed_vs_diff_summary_table.csv"
+    demo_out_dir = (repo_root / args.demo_out_dir).resolve()
 
     _build_gen_ir_if_needed(gen_ir_bin, gen_ir_src)
     git_commit = _git_commit_or_unknown(repo_root)
@@ -1394,20 +2012,40 @@ def main() -> None:
     generated_metrics: List[Path] = []
     generated_run_json: List[Path] = []
     rendered_wavs: List[Path] = []
+    generated_demo_manifests: List[Path] = []
+    generated_demo_wavs: List[Path] = []
 
     for preset_path in preset_paths:
         source = _load_preset(preset_path)
         base_config_id = str(source.get("config_id", preset_path.stem))
         slug = _slug(base_config_id)
         fixed_u, fixed_u_source = _resolve_fixed_u(source)
-        full_has_learned_io, _full_db, _full_dcl, _full_dcr = _full_mode_io_diagnostics(source)
+        full_has_learned_io_source, _full_db, _full_dcl, _full_dcr = _full_mode_io_diagnostics(source)
+        full_has_learned_io_effective = bool(full_has_learned_io_source)
+        warnings_for_config: List[str] = []
+        training_metadata = {
+            "M": int(source.get("M", 0)),
+            "batch": int(source.get("batch", 0)),
+            "epochs": int(source.get("epochs", 0)),
+            "steps": int(source.get("steps", 0)),
+            "lr": float(source.get("lr", float("nan"))),
+            "alpha_sparsity": float(source.get("alpha_sparsity", source.get("alpha_density", float("nan")))),
+            "seed": int(source.get("seed", 0)),
+            "learn_io": bool(source.get("learn_io", False)),
+            "spectral_mode": str(source.get("spectral_mode", "unknown")),
+            "paper_band_enable": bool(source.get("paper_band_enable", False)),
+            "paper_band_min_hz": float(source.get("paper_band_min_hz", 50.0)),
+            "paper_band_max_hz": float(source.get("paper_band_max_hz", 12000.0)),
+            "best_val_step": int(source.get("best_val_step", -1)),
+            "best_val_spectral_loss_like_50_12k": float(
+                source.get("best_val_spectral_loss_like_50_12k", float("nan"))
+            ),
+            "best_val_spectral_dev_db_50_12k": float(
+                source.get("best_val_spectral_dev_db_50_12k", float("nan"))
+            ),
+        }
 
         mode_keys = _scope_modes(args.scope)
-        if "full" in mode_keys and not full_has_learned_io:
-            print(
-                "[WARN] full mode has no learned IO; falling back to defaults "
-                "(full==u_only). Did you run optimizer with --learn-io?"
-            )
         rt60 = _preset_rt60_target(source, float(source.get("rt60", 2.8)))
         gamma_used_source = _preset_gamma_used(source, float(source.get("sr", 48000)), rt60)
         decay_tag = _decay_label(source, float(source.get("sr", 48000)), rt60)
@@ -1479,6 +2117,8 @@ def main() -> None:
         analytic_db_by_mode: Dict[str, np.ndarray] = {}
         ir_db_by_mode: Dict[str, np.ndarray] = {}
         sanity_info_by_mode: Dict[str, Dict[str, float]] = {}
+        summary_row_refs: Dict[str, Dict[str, object]] = {}
+        demo_metadata_for_config: Dict[str, object] | None = None
 
         for mode_key in mode_keys:
             sig = normalized_signals[mode_key]
@@ -1514,12 +2154,46 @@ def main() -> None:
                 sig,
                 sr,
                 threshold_db=float(args.echo_density_threshold_db),
+                mad_k=float(args.echo_density_mad_k),
                 min_spacing_ms=float(args.echo_density_min_spacing_ms),
                 window_ms=float(args.echo_density_window_ms),
                 hop_ms=float(args.echo_density_hop_ms),
                 tmin=float(args.echo_density_tmin),
                 tmax=float(args.echo_density_tmax),
             )
+            level_sig = _slice_by_time(sig, sr, float(args.level_tmin), float(args.level_tmax))
+            if level_sig.size == 0:
+                msg = (
+                    f"[WARN] {base_config_id}/{mode_key}: empty level window "
+                    f"{float(args.level_tmin):.3f}s..{float(args.level_tmax):.3f}s"
+                )
+                print(msg)
+                warnings_for_config.append(msg)
+            wet_rms_db_window = _rms_dbfs(level_sig, float(args.level_eps))
+            wet_peak_db_window = _peak_dbfs(level_sig, float(args.level_eps))
+            wet_rms_db_full = _rms_dbfs(sig, float(args.level_eps))
+            wet_peak_db_full = _peak_dbfs(sig, float(args.level_eps))
+            io_diff_b = _max_abs_diff([float(v) for v in presets_rendered[mode_key]["b"]], DEFAULT_B)
+            io_diff_c_l = _max_abs_diff([float(v) for v in presets_rendered[mode_key]["cL"]], DEFAULT_CL)
+            io_diff_c_r = _max_abs_diff([float(v) for v in presets_rendered[mode_key]["cR"]], DEFAULT_CR)
+            io_max = max(io_diff_b, io_diff_c_l, io_diff_c_r)
+            scenario_has_learned_io = bool(mode_key == "full" and io_max > 1e-6)
+            if mode_key == "u_only" and io_max > 1e-6:
+                msg = (
+                    "[WARN] u_only scenario is not using default b/c within epsilon. "
+                    "Check preset construction for unintended IO coupling."
+                )
+                print(msg)
+                warnings_for_config.append(msg)
+            if mode_key == "full" and not scenario_has_learned_io:
+                msg = (
+                    "[WARN] FULL mode has no learned IO; did you forget --learn-io "
+                    "or did restart selection pick a no-IO preset?"
+                )
+                print(msg)
+                warnings_for_config.append(msg)
+            if mode_key == "full":
+                full_has_learned_io_effective = scenario_has_learned_io
             sanity_info = _sanity_error_debug(
                 analytic_mag_db_s,
                 ir_mag_db_unwindowed_s,
@@ -1577,16 +2251,15 @@ def main() -> None:
                 echo_density_events_per_s_50_300ms=echo_mean,
                 echo_events_count_50_300ms=int(echo_count),
                 echo_window_seconds=float(echo_window_s),
-                io_diff_b_maxabs_vs_default=_max_abs_diff(
-                    [float(v) for v in presets_rendered[mode_key]["b"]], DEFAULT_B
-                ),
-                io_diff_cL_maxabs_vs_default=_max_abs_diff(
-                    [float(v) for v in presets_rendered[mode_key]["cL"]], DEFAULT_CL
-                ),
-                io_diff_cR_maxabs_vs_default=_max_abs_diff(
-                    [float(v) for v in presets_rendered[mode_key]["cR"]], DEFAULT_CR
-                ),
-                full_has_learned_io=bool(full_has_learned_io),
+                wet_rms_db_50_300ms=wet_rms_db_window,
+                wet_peak_db_50_300ms=wet_peak_db_window,
+                wet_rms_db_full=wet_rms_db_full,
+                wet_peak_db_full=wet_peak_db_full,
+                io_diff_b_maxabs_vs_default=io_diff_b,
+                io_diff_cL_maxabs_vs_default=io_diff_c_l,
+                io_diff_cR_maxabs_vs_default=io_diff_c_r,
+                scenario_has_learned_io=scenario_has_learned_io,
+                full_has_learned_io=bool(full_has_learned_io_source),
                 sanity_max_db_error=float(sanity_info["max_db_error"]),
                 sanity_max_db_error_hz=float(sanity_info["max_db_error_hz"]),
                 sanity_max_db_error_a_db=float(sanity_info["max_db_error_a_db"]),
@@ -1616,14 +2289,19 @@ def main() -> None:
                 nfft_used=nfft,
                 aligned_length_samples=min_len,
                 echo_density_threshold_db=float(args.echo_density_threshold_db),
+                echo_density_mad_k=float(args.echo_density_mad_k),
                 echo_density_min_spacing_ms=float(args.echo_density_min_spacing_ms),
                 echo_density_window_ms=float(args.echo_density_window_ms),
                 echo_density_hop_ms=float(args.echo_density_hop_ms),
                 echo_density_tmin=float(args.echo_density_tmin),
                 echo_density_tmax=float(args.echo_density_tmax),
+                level_tmin=float(args.level_tmin),
+                level_tmax=float(args.level_tmax),
+                level_eps=float(args.level_eps),
                 paper_band_min_hz=float(args.paper_band_min_hz),
                 paper_band_max_hz=float(args.paper_band_max_hz),
-                full_has_learned_io=bool(full_has_learned_io),
+                full_has_learned_io=bool(full_has_learned_io_effective),
+                scenario_has_learned_io=bool(scenario_has_learned_io),
                 io_diff_b_maxabs_vs_default=result.io_diff_b_maxabs_vs_default,
                 io_diff_cL_maxabs_vs_default=result.io_diff_cL_maxabs_vs_default,
                 io_diff_cR_maxabs_vs_default=result.io_diff_cR_maxabs_vs_default,
@@ -1635,57 +2313,193 @@ def main() -> None:
             b_vals = [float(v) for v in result.preset["b"]]  # type: ignore[index]
             c_l_vals = [float(v) for v in result.preset["cL"]]  # type: ignore[index]
             c_r_vals = [float(v) for v in result.preset["cR"]]  # type: ignore[index]
-            summary_rows.append(
-                {
-                    "timestamp": now_iso,
-                    "config_id": base_config_id,
-                    "scope": mode_key,
-                    "mode": result.label,
-                    "sr": sr,
-                    "delay_set": _infer_delay_set(base_config_id, [int(v) for v in source["delay_samples"]]),  # type: ignore[index]
-                    "rt60_target": float(rt60),
-                    "gamma_used": float(gamma_used_source),
-                    "u0": u_vals[0],
-                    "u1": u_vals[1],
-                    "u2": u_vals[2],
-                    "u3": u_vals[3],
-                    "b0": b_vals[0],
-                    "b1": b_vals[1],
-                    "b2": b_vals[2],
-                    "b3": b_vals[3],
-                    "cL0": c_l_vals[0],
-                    "cL1": c_l_vals[1],
-                    "cL2": c_l_vals[2],
-                    "cL3": c_l_vals[3],
-                    "cR0": c_r_vals[0],
-                    "cR1": c_r_vals[1],
-                    "cR2": c_r_vals[2],
-                    "cR3": c_r_vals[3],
-                    "io_diff_b_maxabs_vs_default": result.io_diff_b_maxabs_vs_default,
-                    "io_diff_cL_maxabs_vs_default": result.io_diff_cL_maxabs_vs_default,
-                    "io_diff_cR_maxabs_vs_default": result.io_diff_cR_maxabs_vs_default,
-                    "full_has_learned_io": bool(full_has_learned_io),
-                    "spectral_loss_like": result.spectral_loss_like,
-                    "spectral_loss_like_50_12k": result.spectral_loss_like_50_12k,
-                    "spectral_dev_db": result.spectral_dev_db,
-                    "spectral_dev_db_50_12k": result.spectral_dev_db_50_12k,
-                    "rt60_s": result.rt60_s,
-                    "rt60_method": result.rt60_method,
-                    "edt_s": result.edt_s,
-                    "ringiness": result.ringiness,
-                    "kurtosis_mean_50_300ms": result.kurtosis_mean_50_300ms,
-                    "echo_density_events_per_s_50_300ms": result.echo_density_events_per_s_50_300ms,
-                    "echo_events_count_50_300ms": result.echo_events_count_50_300ms,
-                    "echo_window_seconds": result.echo_window_seconds,
-                    "sanity_max_db_error": result.sanity_max_db_error,
-                    "sanity_max_db_error_hz": result.sanity_max_db_error_hz,
-                    "sanity_max_db_error_a_db": result.sanity_max_db_error_a_db,
-                    "sanity_max_db_error_b_db": result.sanity_max_db_error_b_db,
-                    "sanity_max_db_error_bin": result.sanity_max_db_error_bin,
-                    "paper_band_min_hz": float(args.paper_band_min_hz),
-                    "paper_band_max_hz": float(args.paper_band_max_hz),
-                }
+            row = {
+                "timestamp": now_iso,
+                "config_id": base_config_id,
+                "scope": mode_key,
+                "mode": result.label,
+                "sr": sr,
+                "delay_set": _infer_delay_set(base_config_id, [int(v) for v in source["delay_samples"]]),  # type: ignore[index]
+                "rt60_target": float(rt60),
+                "gamma_used": float(gamma_used_source),
+                "u0": u_vals[0],
+                "u1": u_vals[1],
+                "u2": u_vals[2],
+                "u3": u_vals[3],
+                "b0": b_vals[0],
+                "b1": b_vals[1],
+                "b2": b_vals[2],
+                "b3": b_vals[3],
+                "cL0": c_l_vals[0],
+                "cL1": c_l_vals[1],
+                "cL2": c_l_vals[2],
+                "cL3": c_l_vals[3],
+                "cR0": c_r_vals[0],
+                "cR1": c_r_vals[1],
+                "cR2": c_r_vals[2],
+                "cR3": c_r_vals[3],
+                "io_diff_b_maxabs_vs_default": result.io_diff_b_maxabs_vs_default,
+                "io_diff_cL_maxabs_vs_default": result.io_diff_cL_maxabs_vs_default,
+                "io_diff_cR_maxabs_vs_default": result.io_diff_cR_maxabs_vs_default,
+                "scenario_has_learned_io": bool(scenario_has_learned_io),
+                "full_has_learned_io": bool(full_has_learned_io_effective),
+                "spectral_loss_like": result.spectral_loss_like,
+                "spectral_loss_like_50_12k": result.spectral_loss_like_50_12k,
+                "spectral_dev_db": result.spectral_dev_db,
+                "spectral_dev_db_50_12k": result.spectral_dev_db_50_12k,
+                "rt60_s": result.rt60_s,
+                "rt60_method": result.rt60_method,
+                "edt_s": result.edt_s,
+                "ringiness": result.ringiness,
+                "kurtosis_mean_50_300ms": result.kurtosis_mean_50_300ms,
+                "echo_density_events_per_s_50_300ms": result.echo_density_events_per_s_50_300ms,
+                "echo_events_count_50_300ms": result.echo_events_count_50_300ms,
+                "echo_window_seconds": result.echo_window_seconds,
+                "wet_rms_db_50_300ms": result.wet_rms_db_50_300ms,
+                "wet_peak_db_50_300ms": result.wet_peak_db_50_300ms,
+                "wet_rms_db_full": result.wet_rms_db_full,
+                "wet_peak_db_full": result.wet_peak_db_full,
+                "sanity_max_db_error": result.sanity_max_db_error,
+                "sanity_max_db_error_hz": result.sanity_max_db_error_hz,
+                "sanity_max_db_error_a_db": result.sanity_max_db_error_a_db,
+                "sanity_max_db_error_b_db": result.sanity_max_db_error_b_db,
+                "sanity_max_db_error_bin": result.sanity_max_db_error_bin,
+                "paper_band_min_hz": float(args.paper_band_min_hz),
+                "paper_band_max_hz": float(args.paper_band_max_hz),
+                "demo_measured_lufs": math.nan,
+                "demo_target_lufs": math.nan,
+                "demo_gain_db_applied": math.nan,
+                "demo_peak_after_dbfs": math.nan,
+                "demo_method_requested": str(args.level_match_method) if bool(args.export_demo_wavs) else "",
+                "demo_method_used": "",
+                "demo_measured_rms50_300_db": math.nan,
+                "demo_target_rms50_300_db": math.nan,
+                "recommended_gain_db_to_match_fixed_rms50_300": math.nan,
+                "recommended_gain_db_to_match_fixed_lufs": math.nan,
+            }
+            summary_row_refs[mode_key] = row
+            summary_rows.append(row)
+
+        if bool(args.export_demo_wavs):
+            demo_root = demo_out_dir / slug
+            demo_export = _export_demo_bundle(
+                demo_root=demo_root,
+                base_config_id=base_config_id,
+                preset_path=preset_path,
+                wav_paths=wav_paths,
+                mode_keys=mode_keys,
+                sr_expected=sr,
+                seed=int(args.seed),
+                stimulus=str(args.demo_stimulus),
+                demo_input_wav=args.demo_input_wav,
+                demo_seconds=float(args.demo_seconds),
+                demo_dry_level_dbfs=float(args.demo_dry_level_dbfs),
+                demo_conv_mode=str(args.demo_conv_mode),
+                level_match_method=str(args.level_match_method),
+                level_match_target=str(args.level_match_target),
+                level_match_target_lufs=float(args.level_match_target_lufs),
+                level_match_peak_limit_dbfs=float(args.level_match_peak_limit_dbfs),
+                require_lufs=bool(args.require_lufs),
+                level_tmin=float(args.level_tmin),
+                level_tmax=float(args.level_tmax),
+                git_commit=git_commit,
+                repro_command=repro_command,
             )
+            manifest = demo_export["manifest"]
+            manifest_path = Path(str(demo_export["manifest_path"]))
+            demo_metadata_for_config = {
+                "manifest_path": str(manifest_path),
+                "method_requested": str(manifest["level_match"]["method_requested"]),
+                "method_used": str(manifest["level_match"]["method_used"]),
+                "target_policy": str(manifest["level_match"]["target_policy"]),
+                "target_value": (
+                    math.nan
+                    if manifest["level_match"]["target_value"] is None
+                    else float(manifest["level_match"]["target_value"])
+                ),
+                "target_lufs": float(manifest["level_match"]["target_lufs"]),
+                "peak_limit_dbfs": float(manifest["level_match"]["peak_limit_dbfs"]),
+            }
+            generated_demo_manifests.append(manifest_path)
+            for mode_key in mode_keys:
+                mode_manifest = manifest["modes"][mode_key]
+                summary_row_refs[mode_key]["demo_method_requested"] = str(
+                    manifest["level_match"]["method_requested"]
+                )
+                summary_row_refs[mode_key]["demo_method_used"] = str(
+                    manifest["level_match"]["method_used"]
+                )
+                summary_row_refs[mode_key]["demo_measured_rms50_300_db"] = float(
+                    mode_manifest["measured_rms_50_300ms_db"]
+                )
+                summary_row_refs[mode_key]["demo_target_rms50_300_db"] = (
+                    math.nan
+                    if str(manifest["level_match"]["method_used"]) != "rms_50_300ms"
+                    else float(manifest["level_match"]["target_value"])
+                )
+                summary_row_refs[mode_key]["demo_measured_lufs"] = (
+                    math.nan
+                    if mode_manifest["measured_lufs"] is None
+                    else float(mode_manifest["measured_lufs"])
+                )
+                summary_row_refs[mode_key]["demo_target_lufs"] = (
+                    math.nan
+                    if (
+                        str(manifest["level_match"]["method_used"]) != "lufs"
+                        or manifest["level_match"]["target_value"] is None
+                    )
+                    else float(manifest["level_match"]["target_value"])
+                )
+                summary_row_refs[mode_key]["demo_gain_db_applied"] = float(
+                    mode_manifest["gain_db_applied_total"]
+                )
+                summary_row_refs[mode_key]["demo_peak_after_dbfs"] = float(
+                    mode_manifest["peak_after_dbfs"]
+                )
+                summary_row_refs[mode_key]["recommended_gain_db_to_match_fixed_rms50_300"] = float(
+                    mode_manifest["recommended_gain_db_to_match_fixed_rms50_300"]
+                )
+                summary_row_refs[mode_key]["recommended_gain_db_to_match_fixed_lufs"] = float(
+                    mode_manifest["recommended_gain_db_to_match_fixed_lufs"]
+                )
+                scenario_results[mode_key].demo_measured_lufs = (
+                    math.nan
+                    if mode_manifest["measured_lufs"] is None
+                    else float(mode_manifest["measured_lufs"])
+                )
+                scenario_results[mode_key].demo_target_lufs = (
+                    math.nan
+                    if not np.isfinite(float(summary_row_refs[mode_key]["demo_target_lufs"]))
+                    else float(summary_row_refs[mode_key]["demo_target_lufs"])
+                )
+                scenario_results[mode_key].demo_gain_db_applied = float(
+                    mode_manifest["gain_db_applied_total"]
+                )
+                scenario_results[mode_key].demo_peak_after_dbfs = float(
+                    mode_manifest["peak_after_dbfs"]
+                )
+                scenario_results[mode_key].demo_method_requested = str(
+                    manifest["level_match"]["method_requested"]
+                )
+                scenario_results[mode_key].demo_method_used = str(
+                    manifest["level_match"]["method_used"]
+                )
+                scenario_results[mode_key].demo_measured_rms50_300_db = float(
+                    mode_manifest["measured_rms_50_300ms_db"]
+                )
+                scenario_results[mode_key].demo_target_rms50_300_db = (
+                    math.nan
+                    if not np.isfinite(float(summary_row_refs[mode_key]["demo_target_rms50_300_db"]))
+                    else float(summary_row_refs[mode_key]["demo_target_rms50_300_db"])
+                )
+                scenario_results[mode_key].recommended_gain_db_to_match_fixed_rms50_300 = float(
+                    mode_manifest["recommended_gain_db_to_match_fixed_rms50_300"]
+                )
+                scenario_results[mode_key].recommended_gain_db_to_match_fixed_lufs = float(
+                    mode_manifest["recommended_gain_db_to_match_fixed_lufs"]
+                )
+                generated_demo_wavs.append(Path(str(mode_manifest["raw_wav"])))
+                generated_demo_wavs.append(Path(str(mode_manifest["matched_wav"])))
 
         analytic_fig = fig_dir / f"fixed_vs_diff_mag_overlay_{slug}.png"
         irfft_fig = fig_dir / f"fixed_vs_diff_irfft_overlay_{slug}.png"
@@ -1746,7 +2560,13 @@ def main() -> None:
             results=scenario_results,
             paper_band_min_hz=float(args.paper_band_min_hz),
             paper_band_max_hz=float(args.paper_band_max_hz),
-            full_has_learned_io=bool(full_has_learned_io),
+            level_tmin=float(args.level_tmin),
+            level_tmax=float(args.level_tmax),
+            level_eps=float(args.level_eps),
+            full_has_learned_io=bool(full_has_learned_io_effective),
+            training_metadata=training_metadata,
+            warnings=warnings_for_config,
+            demo_metadata=demo_metadata_for_config,
         )
         generated_run_json.append(run_payload)
 
@@ -1791,6 +2611,12 @@ def main() -> None:
     for wav in rendered_wavs:
         print(f"  - {wav}")
         print(f"    sidecar: {wav}.json")
+    if generated_demo_manifests:
+        print("Demo playback exports:")
+        for manifest in generated_demo_manifests:
+            print(f"  - manifest: {manifest}")
+        for wav in generated_demo_wavs:
+            print(f"  - demo wav: {wav}")
 
     print(f"Wrote figure: {generic_analytic}")
     print(f"Wrote figure: {generic_irfft}")

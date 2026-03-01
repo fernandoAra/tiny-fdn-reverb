@@ -62,6 +62,8 @@ if [[ -n "${MULTISEED_CONFIG}" ]]; then
     "${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_PAPER_DIR}/multiseed_deltas_errorbars.png" \
     "${PAPER_FIG_MS_DIR}/fig_multiseed_deltas_${MULTISEED_CONFIG}.png"
+  copy_required "${MULTI_PAPER_DIR}/multiseed_improvement_errorbars.png" \
+    "${PAPER_FIG_MS_DIR}/fig_multiseed_improvement_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_PAPER_DIR}/multiseed_diffusion_meanstd.png" \
     "${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
   copy_required "${MULTI_PAPER_DIR}/multiseed_echo_density_meanstd.png" \
@@ -70,6 +72,8 @@ if [[ -n "${MULTISEED_CONFIG}" ]]; then
     "${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
   copy_required "${MULTI_DIR}/aggregate_deltas.csv" \
     "${PAPER_TAB_MS_DIR}/deltas_multiseed_${MULTISEED_CONFIG}.csv"
+  copy_required "${MULTI_DIR}/wins_table.csv" \
+    "${PAPER_TAB_MS_DIR}/wins_multiseed_${MULTISEED_CONFIG}.csv"
   copy_required "${MULTI_DIR}/aggregate_stats.json" \
     "${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
 fi
@@ -89,9 +93,11 @@ fi
 if [[ -n "${MULTISEED_CONFIG}" ]]; then
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_metrics_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_deltas_${MULTISEED_CONFIG}.png"
+  echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_improvement_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_diffusion_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_FIG_MS_DIR}/fig_multiseed_echo_density_${MULTISEED_CONFIG}.png"
   echo "  ${PAPER_TAB_MS_DIR}/table_multiseed_${MULTISEED_CONFIG}.csv"
   echo "  ${PAPER_TAB_MS_DIR}/deltas_multiseed_${MULTISEED_CONFIG}.csv"
+  echo "  ${PAPER_TAB_MS_DIR}/wins_multiseed_${MULTISEED_CONFIG}.csv"
   echo "  ${PAPER_TAB_MS_DIR}/stats_multiseed_${MULTISEED_CONFIG}.json"
 fi

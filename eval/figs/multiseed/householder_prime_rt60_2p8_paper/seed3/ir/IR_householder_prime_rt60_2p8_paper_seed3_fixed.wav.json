@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-02-26T09:45:20.916934+00:00",
-  "git_commit": "737f88c80ad64aa1d08055ae7027cecaa4fe3a2c",
+  "timestamp_utc": "2026-02-26T13:34:04.615650+00:00",
+  "git_commit": "f0f3c5ca42a7757f0ecc1e850c222ad37ee5abb8",
   "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
   "renderer": "eval/tools/gen_ir.cpp",
   "base_config_id": "householder_prime_rt60_2p8_paper_seed3",
@@ -66,7 +66,7 @@
   ],
   "ir_seconds": 11.2,
   "channel_used_for_analysis": "L",
-  "normalization_peak_common": 0.12616826593875885,
+  "normalization_peak_common": 0.31172800064086914,
   "diffusion_proxy_name": "short_time_excess_kurtosis_rmsnorm",
   "diffusion_proxy_definition": "Per-frame excess kurtosis on RMS-normalized frames; windows below RMS threshold are ignored. Lower values indicate more Gaussian-like amplitude statistics and higher diffusion (proxy).",
   "diffusion_proxy_window_ms": 20.0,
@@ -85,6 +85,20 @@
     0.05,
     0.3
   ],
+  "paper_band_hz": [
+    50.0,
+    12000.0
+  ],
+  "paper_band_metrics": [
+    "spectral_loss_like_50_12k",
+    "spectral_dev_db_50_12k"
+  ],
+  "full_has_learned_io": true,
+  "io_diff_b_maxabs_vs_default": 0.0,
+  "io_diff_cL_maxabs_vs_default": 0.0,
+  "io_diff_cR_maxabs_vs_default": 0.0,
+  "echo_events_count_50_300ms": 12,
+  "echo_window_seconds": 0.25,
   "compare_lti_enforced": true,
   "compare_mod_depth": 0.0,
   "compare_detune": 0.0,

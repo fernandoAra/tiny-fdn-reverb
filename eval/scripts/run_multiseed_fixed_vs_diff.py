@@ -8,6 +8,7 @@ import csv
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -25,6 +26,10 @@ MODE_COLORS = {
     "u_only": "tab:blue",
     "full": "tab:green",
 }
+
+DEFAULT_B = [0.25, 0.25, 0.25, 0.25]
+DEFAULT_CL = [0.5, -0.5, 0.5, -0.5]
+DEFAULT_CR = [0.5, 0.5, -0.5, -0.5]
 
 METRICS = [
     "spectral_loss_like",
@@ -48,6 +53,18 @@ METRIC_LABELS = {
     "ringiness": "ringiness (peak/mean)",
     "kurtosis_mean_50_300ms": "kurtosis mean 50-300 ms",
     "echo_density_events_per_s_50_300ms": "echo density (events/s)",
+}
+
+WIN_DIRECTION = {
+    "spectral_loss_like": "lower",
+    "spectral_loss_like_50_12k": "lower",
+    "spectral_dev_db": "lower",
+    "spectral_dev_db_50_12k": "lower",
+    "rt60_s": "target",
+    "edt_s": "target",
+    "ringiness": "lower",
+    "kurtosis_mean_50_300ms": "lower",
+    "echo_density_events_per_s_50_300ms": "higher",
 }
 
 DELTA_METRICS = [
@@ -99,13 +116,55 @@ def _safe_float(v: object) -> float:
 def _aggregate_metric(values: Sequence[float]) -> Dict[str, float]:
     arr = np.asarray([v for v in values if np.isfinite(v)], dtype=np.float64)
     if arr.size == 0:
-        return {"mean": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan")}
+        return {
+            "mean": float("nan"),
+            "std": float("nan"),
+            "median": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+            "n": 0.0,
+        }
     return {
         "mean": float(np.mean(arr)),
         "std": float(np.std(arr)),
+        "median": float(np.median(arr)),
         "min": float(np.min(arr)),
         "max": float(np.max(arr)),
+        "n": float(arr.size),
     }
+
+
+def _extract_metric_from_preset(payload: Dict[str, object], key: str) -> float:
+    if key in payload:
+        return _safe_float(payload.get(key))
+    losses = payload.get("losses")
+    if isinstance(losses, dict) and key in losses:
+        return _safe_float(losses.get(key))
+    return float("nan")
+
+
+def _max_abs_diff(a: Sequence[float], b: Sequence[float]) -> float:
+    aa = np.asarray([float(v) for v in a], dtype=np.float64)
+    bb = np.asarray([float(v) for v in b], dtype=np.float64)
+    return float(np.max(np.abs(aa - bb)))
+
+
+def _preset_has_learned_io(payload: Dict[str, object], eps: float = 1e-6) -> bool:
+    b = payload.get("b")
+    c_l = payload.get("cL")
+    c_r = payload.get("cR")
+    if not (isinstance(b, list) and isinstance(c_l, list) and isinstance(c_r, list)):
+        return False
+    if not (len(b) == 4 and len(c_l) == 4 and len(c_r) == 4):
+        return False
+    return bool(
+        max(
+            _max_abs_diff(b, DEFAULT_B),
+            _max_abs_diff(c_l, DEFAULT_CL),
+            _max_abs_diff(c_r, DEFAULT_CR),
+        )
+        > float(eps)
+    )
 
 
 def _aggregate_curves(
@@ -249,6 +308,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-id", required=True)
     parser.add_argument("--seeds", default="0,1,2,3,4")
+    parser.add_argument("--restarts", type=int, default=8)
+    parser.add_argument("--restart-seed-mult", type=int, default=1000)
+    parser.add_argument(
+        "--select-metric",
+        default="best_val_spectral_dev_db_50_12k",
+        help="Preset metric key used to select best restart.",
+    )
+    parser.add_argument("--select-direction", choices=["lower", "higher"], default="lower")
     parser.add_argument("--dry-run", action="store_true")
 
     # optimizer pass-through
@@ -265,11 +332,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--spectral-mode", choices=["unity", "mean"], default="unity")
     parser.add_argument("--train-lossless", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--optimize-with-decay", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--paper-band-enable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--paper-band-min-hz", type=float, default=50.0)
+    parser.add_argument("--paper-band-max-hz", type=float, default=12000.0)
     parser.add_argument(
         "--learn-io",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable learned b/c optimization (paper experiment default).",
+    )
+    parser.add_argument(
+        "--force-learn-io",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="If set, overrides --learn-io. Default behavior: enabled when scope includes full/all.",
     )
 
     # compare pass-through
@@ -279,6 +355,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-freq-hz", type=float, default=12000.0)
     parser.add_argument("--kurtosis-rms-threshold-db", type=float, default=-60.0)
     parser.add_argument("--echo-density-threshold-db", type=float, default=-30.0)
+    parser.add_argument("--echo-density-mad-k", type=float, default=3.0)
     parser.add_argument("--echo-density-min-spacing-ms", type=float, default=1.0)
     parser.add_argument("--echo-density-window-ms", type=float, default=10.0)
     parser.add_argument("--echo-density-hop-ms", type=float, default=5.0)
@@ -328,58 +405,166 @@ def main() -> None:
     curves_echo: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {m: [] for m in MODE_ORDER}
 
     python = "python3"
+    print("[Repro command]")
+    print("  " + " ".join(shlex.quote(x) for x in sys.argv))
+    force_learn_io = args.force_learn_io
+    if force_learn_io is None:
+        force_learn_io = args.scope in {"all", "full"}
+    effective_learn_io = bool(args.learn_io or force_learn_io)
+    if force_learn_io and not bool(args.learn_io):
+        print("[Info] force-learn-io enabled by scope; overriding --no-learn-io.")
+
+    selected_preset_by_seed: Dict[int, Path] = {}
+
     for seed in seeds:
         seed_dir = run_root / f"seed{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
 
-        preset_path = preset_dir / f"{args.config_id}_seed{seed}.json"
-        history_path = seed_dir / "optimizer_history.json"
-        optimize_cmd = [
-            python,
-            str((repo_root / "eval/difffdn/optimize_householder.py").resolve()),
-            "--config-id",
-            f"{args.config_id}_seed{seed}",
-            "--matrix-type",
-            args.matrix_type,
-            "--fs",
-            str(args.fs),
-            "--nfft",
-            str(args.nfft),
-            "--M",
-            str(args.M),
-            "--batch",
-            str(args.batch),
-            "--epochs",
-            str(args.epochs),
-            "--delay-samples",
-            args.delay_samples,
-            "--rt60",
-            str(args.rt60),
-            "--lr",
-            str(args.lr),
-            "--alpha-sparsity",
-            str(args.alpha_sparsity),
-            "--spectral-mode",
-            args.spectral_mode,
-            _bool_flag("train-lossless", bool(args.train_lossless)),
-            _bool_flag("optimize-with-decay", bool(args.optimize_with_decay)),
-            _bool_flag("learn-io", bool(args.learn_io)),
-            "--seed",
-            str(seed),
-            "--out-json",
-            str(preset_path),
-            "--history-json",
-            str(history_path),
-            "--out-dir",
-            str(preset_dir),
-        ]
-        _run(optimize_cmd, dry_run=args.dry_run)
+        restart_rows: List[Dict[str, object]] = []
+        restart_candidates: List[Dict[str, object]] = []
+        restart_count = max(int(args.restarts), 1)
+        for restart_idx in range(restart_count):
+            restart_seed = int(seed) * int(args.restart_seed_mult) + int(restart_idx)
+            preset_path = preset_dir / f"{args.config_id}_seed{seed}_r{restart_idx}.json"
+            history_path = seed_dir / f"optimizer_history_r{restart_idx}.json"
+            optimize_cmd = [
+                python,
+                str((repo_root / "eval/difffdn/optimize_householder.py").resolve()),
+                "--config-id",
+                f"{args.config_id}_seed{seed}_r{restart_idx}",
+                "--matrix-type",
+                args.matrix_type,
+                "--fs",
+                str(args.fs),
+                "--nfft",
+                str(args.nfft),
+                "--M",
+                str(args.M),
+                "--batch",
+                str(args.batch),
+                "--epochs",
+                str(args.epochs),
+                "--delay-samples",
+                args.delay_samples,
+                "--rt60",
+                str(args.rt60),
+                "--lr",
+                str(args.lr),
+                "--alpha-sparsity",
+                str(args.alpha_sparsity),
+                "--spectral-mode",
+                args.spectral_mode,
+                _bool_flag("train-lossless", bool(args.train_lossless)),
+                _bool_flag("optimize-with-decay", bool(args.optimize_with_decay)),
+                _bool_flag("paper-band-enable", bool(args.paper_band_enable)),
+                "--paper-band-min-hz",
+                str(args.paper_band_min_hz),
+                "--paper-band-max-hz",
+                str(args.paper_band_max_hz),
+                _bool_flag("learn-io", bool(effective_learn_io)),
+                "--seed",
+                str(restart_seed),
+                "--out-json",
+                str(preset_path),
+                "--history-json",
+                str(history_path),
+                "--out-dir",
+                str(preset_dir),
+            ]
+            _run(optimize_cmd, dry_run=args.dry_run)
+
+            if args.dry_run:
+                continue
+
+            preset_payload = json.loads(preset_path.read_text())
+            metric_value = _extract_metric_from_preset(preset_payload, str(args.select_metric))
+            has_learned_io = _preset_has_learned_io(preset_payload)
+            restart_row = {
+                "restart_idx": restart_idx,
+                "restart_seed": restart_seed,
+                "selection_metric": str(args.select_metric),
+                "selection_value": metric_value,
+                "best_val_spectral_loss_like_50_12k": _extract_metric_from_preset(
+                    preset_payload, "best_val_spectral_loss_like_50_12k"
+                ),
+                "best_val_spectral_dev_db_50_12k": _extract_metric_from_preset(
+                    preset_payload, "best_val_spectral_dev_db_50_12k"
+                ),
+                "has_learned_io": bool(has_learned_io),
+                "preset_path": str(preset_path),
+            }
+            restart_rows.append(restart_row)
+            restart_candidates.append(
+                {
+                    "path": preset_path,
+                    "metric": metric_value,
+                    "has_learned_io": bool(has_learned_io),
+                    "restart_seed": restart_seed,
+                    "restart_idx": restart_idx,
+                }
+            )
+
+        if args.dry_run:
+            continue
+
+        restarts_csv = seed_dir / "restarts_summary.csv"
+        with restarts_csv.open("w", newline="") as handle:
+            fields = [
+                "restart_idx",
+                "restart_seed",
+                "selection_metric",
+                "selection_value",
+                "best_val_spectral_loss_like_50_12k",
+                "best_val_spectral_dev_db_50_12k",
+                "has_learned_io",
+                "preset_path",
+            ]
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for row in restart_rows:
+                writer.writerow(row)
+
+        finite_candidates = [c for c in restart_candidates if np.isfinite(_safe_float(c.get("metric", float("nan"))))]
+        if not finite_candidates:
+            finite_candidates = restart_candidates
+        if not finite_candidates:
+            raise RuntimeError(f"No restart presets generated for seed {seed}")
+
+        reverse = str(args.select_direction).lower() == "higher"
+        best_candidate = sorted(
+            finite_candidates,
+            key=lambda c: _safe_float(c.get("metric", float("nan"))),
+            reverse=reverse,
+        )[0]
+
+        if args.scope in {"full", "all"} and not bool(best_candidate.get("has_learned_io", False)):
+            learned_candidates = [c for c in finite_candidates if bool(c.get("has_learned_io", False))]
+            if learned_candidates:
+                best_candidate = sorted(
+                    learned_candidates,
+                    key=lambda c: _safe_float(c.get("metric", float("nan"))),
+                    reverse=reverse,
+                )[0]
+                print(
+                    f"[WARN] seed {seed}: selected restart lacked learned IO; "
+                    "falling back to best restart with learned IO."
+                )
+            else:
+                print(
+                    f"[WARN] seed {seed}: scope includes full but no restart has learned IO. "
+                    "Full vs u_only may become redundant."
+                )
+
+        best_preset_path = seed_dir / "best_preset.json"
+        best_payload = json.loads(Path(best_candidate["path"]).read_text())
+        best_preset_path.write_text(json.dumps(best_payload, indent=2) + "\n")
+        selected_preset_by_seed[int(seed)] = best_preset_path
 
         compare_cmd = [
             python,
             str((repo_root / "eval/scripts/compare_fixed_vs_diff.py").resolve()),
             "--preset",
-            str(preset_path),
+            str(best_preset_path),
             "--scope",
             args.scope,
             "--seed",
@@ -394,6 +579,8 @@ def main() -> None:
             str(args.kurtosis_rms_threshold_db),
             "--echo-density-threshold-db",
             str(args.echo_density_threshold_db),
+            "--echo-density-mad-k",
+            str(args.echo_density_mad_k),
             "--echo-density-min-spacing-ms",
             str(args.echo_density_min_spacing_ms),
             "--echo-density-window-ms",
@@ -490,6 +677,7 @@ def main() -> None:
     aggregate_summary = run_root / "aggregate_summary.csv"
     aggregate_stats = run_root / "aggregate_stats.json"
     aggregate_deltas = run_root / "aggregate_deltas.csv"
+    wins_table_csv = run_root / "wins_table.csv"
     ordered_fields = ["seed"] + [k for k in per_seed_rows[0].keys() if k != "seed"]
     with aggregate_summary.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=ordered_fields)
@@ -513,6 +701,9 @@ def main() -> None:
     delta_values: Dict[str, Dict[str, List[float]]] = {"u_only": {}, "full": {}}
     for scenario in ("u_only", "full"):
         delta_values[scenario] = {m: [] for m in DELTA_METRICS}
+    wins_counts: Dict[str, Dict[str, int]] = {"u_only": {}, "full": {}}
+    for scenario in ("u_only", "full"):
+        wins_counts[scenario] = {m: 0 for m in METRICS}
 
     for seed_i in sorted(by_seed_scope.keys()):
         per_scope = by_seed_scope[seed_i]
@@ -523,17 +714,24 @@ def main() -> None:
             scenario_row = per_scope.get(scenario)
             if scenario_row is None:
                 continue
-            for metric in DELTA_METRICS:
+            for metric in METRICS:
                 fixed_v = _safe_float(fixed_row.get(metric, ""))
                 scen_v = _safe_float(scenario_row.get(metric, ""))
                 if not (np.isfinite(fixed_v) and np.isfinite(scen_v)):
                     continue
-                direction = DELTA_DIRECTION.get(metric, "")
+                direction = WIN_DIRECTION.get(metric, "target")
                 if direction.startswith("lower"):
                     delta_v = float(fixed_v - scen_v)
+                    if scen_v < fixed_v:
+                        wins_counts[scenario][metric] += 1
+                elif direction.startswith("higher"):
+                    delta_v = float(scen_v - fixed_v)
+                    if scen_v > fixed_v:
+                        wins_counts[scenario][metric] += 1
                 else:
                     delta_v = float(scen_v - fixed_v)
-                delta_values[scenario][metric].append(delta_v)
+                if metric in delta_values[scenario]:
+                    delta_values[scenario][metric].append(delta_v)
                 delta_rows.append(
                     {
                         "seed": seed_i,
@@ -566,6 +764,28 @@ def main() -> None:
         for metric in DELTA_METRICS:
             delta_stats[scenario][metric] = _aggregate_metric(delta_values[scenario][metric])
 
+    # Add wins_count_vs_fixed to per-mode aggregate stats for paper-friendly reporting.
+    for scenario in ("u_only", "full"):
+        for metric in METRICS:
+            stats_by_mode[scenario][metric]["wins_count_vs_fixed"] = float(wins_counts[scenario][metric])
+    for metric in METRICS:
+        stats_by_mode["fixed"][metric]["wins_count_vs_fixed"] = float("nan")
+
+    with wins_table_csv.open("w", newline="") as handle:
+        fields = ["metric", "direction", "wins_u_only", "wins_full", "n_seeds"]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for metric in METRICS:
+            writer.writerow(
+                {
+                    "metric": metric,
+                    "direction": WIN_DIRECTION.get(metric, "target"),
+                    "wins_u_only": wins_counts["u_only"].get(metric, 0),
+                    "wins_full": wins_counts["full"].get(metric, 0),
+                    "n_seeds": len(by_seed_scope),
+                }
+            )
+
     aggregate_payload = {
         "config_id": args.config_id,
         "seeds": seeds,
@@ -576,6 +796,7 @@ def main() -> None:
             "aggregate_summary_csv": str(aggregate_summary),
             "aggregate_deltas_csv": str(aggregate_deltas),
             "aggregate_stats_json": str(aggregate_stats),
+            "wins_table_csv": str(wins_table_csv),
         },
     }
     aggregate_stats.write_text(json.dumps(aggregate_payload, indent=2) + "\n")
@@ -583,10 +804,12 @@ def main() -> None:
     paper_dir.mkdir(parents=True, exist_ok=True)
     metrics_fig = paper_dir / "multiseed_metrics_errorbars.png"
     deltas_fig = paper_dir / "multiseed_deltas_errorbars.png"
+    improvement_fig = paper_dir / "multiseed_improvement_errorbars.png"
     diffusion_fig = paper_dir / "multiseed_diffusion_meanstd.png"
     echo_fig = paper_dir / "multiseed_echo_density_meanstd.png"
     _plot_metrics_errorbars(metrics_fig, stats_by_mode)
     _plot_deltas_errorbars(deltas_fig, delta_stats=delta_stats)
+    _plot_deltas_errorbars(improvement_fig, delta_stats=delta_stats)
     _plot_curve_mean_std(
         diffusion_fig,
         title=f"multiseed impulsiveness proxy (kurtosis, exploratory) ({args.config_id})",
@@ -604,15 +827,17 @@ def main() -> None:
         summary_tmax=float(args.echo_density_tmax),
     )
 
-    print("Wrote presets:")
+    print("Wrote selected best presets:")
     for seed in seeds:
-        print(f"  - {preset_dir / f'{args.config_id}_seed{seed}.json'}")
+        print(f"  - seed{seed}: {selected_preset_by_seed.get(seed, Path('unknown'))}")
     print(f"Wrote aggregate summary: {aggregate_summary}")
     print(f"Wrote aggregate deltas:  {aggregate_deltas}")
+    print(f"Wrote wins table:        {wins_table_csv}")
     print(f"Wrote aggregate stats:   {aggregate_stats}")
     print("Wrote multiseed paper figures:")
     print(f"  - {metrics_fig}")
     print(f"  - {deltas_fig}")
+    print(f"  - {improvement_fig}")
     print(f"  - {diffusion_fig}")
     print(f"  - {echo_fig}")
 

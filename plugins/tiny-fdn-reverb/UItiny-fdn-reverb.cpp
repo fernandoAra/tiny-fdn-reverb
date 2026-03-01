@@ -29,7 +29,7 @@ static void tfdn_open_log() { gTFDNLog = std::fopen("/tmp/tfdn.log", "a"); }
 START_NAMESPACE_DISTRHO
 using namespace DGL; // nvg* symbols
 
-static constexpr const char* kPluginVersionText = "v1.26";
+static constexpr const char* kPluginVersionText = "v1.28";
 static constexpr float kFontTitle = 19.0f;
 static constexpr float kFontLabel = 15.0f;
 static constexpr float kFontValue = 15.0f;
@@ -550,7 +550,7 @@ void UITinyFdnReverb::onNanoDisplay()
     beginPath(); rect(0, 0, W, H); fillColor(Color(250,250,250)); fill();
     beginPath(); rect(headerRect.x, headerRect.y, headerRect.w, headerRect.h); fillColor(Color(245,245,245)); fill();
     fontSize(kFontTitle); fillColor(Color(30,30,30)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-    text(12.f, headerRect.y + headerRect.h*0.5f, "Tiny FDN Reverb v1.26 — Dal Santo core", nullptr);
+    text(12.f, headerRect.y + headerRect.h*0.5f, "Tiny FDN Reverb v1.28 — Dal Santo core", nullptr);
 
     const char* matrixDisplay = fIsMorphing
                               ? "Morphing"

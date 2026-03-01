@@ -20,14 +20,24 @@
   "gamma": 0.9999486043321197,
   "gamma_used": 0.9999486043321197,
   "gamma_source": "rt60_target",
-  "train_lossless": false,
-  "optimize_with_decay": true,
-  "gamma_train": 0.9999486043321197,
+  "train_lossless": true,
+  "optimize_with_decay": false,
+  "stability_gamma": 0.9999,
+  "gamma_train": 0.9999,
+  "training_mode": "lossless-core-stabilized",
   "alpha_density": 0.05,
   "alpha_sparsity": 0.05,
   "spectral_mode": "unity",
+  "freq_grid_size": 480000,
   "freq_bins_per_step": 2000,
   "learn_io": true,
+  "paper_band_enable": true,
+  "paper_band_min_hz": 50.0,
+  "paper_band_max_hz": 12000.0,
+  "band_k_pool_count": 239001,
+  "band_k_min": 1000,
+  "band_k_max": 240000,
+  "k_to_hz_formula": "hz = k * sr / (2 * freq_grid_size)",
   "seed": 0,
   "gains": [
     0.9258490356932044,
@@ -36,10 +46,10 @@
     0.7967406292535046
   ],
   "gains_training": [
-    0.9258490356932044,
-    0.8849973378134331,
-    0.8476019833822931,
-    0.7967406292535046
+    0.8607875994690201,
+    0.788429816204984,
+    0.7249039714501405,
+    0.642671156355556
   ],
   "matrix_type": "householder",
   "fixed_u": [
@@ -49,10 +59,10 @@
     0.5
   ],
   "u": [
-    0.3625637827739432,
-    -0.09202018104314791,
-    -0.833748516952474,
-    0.4061319984696914
+    0.35792738371481553,
+    -0.21641560670482132,
+    -0.7826492450237773,
+    0.4609907075260441
   ],
   "b": [
     0.25,
@@ -73,10 +83,33 @@
     -0.5
   ],
   "losses": {
-    "total": 0.2639930685891251,
-    "spectral": 0.2455301448502367,
-    "sparsity": 0.36925847477776785
+    "total": 0.14316503483805884,
+    "spectral": 0.13141857639807059,
+    "sparsity": 0.23492916879976522,
+    "best_val_step": 719.0,
+    "best_val_spectral_loss_like_50_12k": 0.1317743188031723,
+    "best_val_spectral_dev_db_50_12k": 3.800093956365922,
+    "final_spectral_dev_db_50_12k": 3.7613328488636153,
+    "training_band_k_count": 239001.0,
+    "band_k_min": 1000.0,
+    "band_k_max": 240000.0,
+    "train_band_k_count": 191201.0,
+    "val_band_k_count": 47800.0,
+    "freq_grid_size": 480000.0,
+    "paper_band_enable": 1.0,
+    "paper_band_min_hz": 50.0,
+    "paper_band_max_hz": 12000.0,
+    "gamma_train": 0.9999,
+    "stability_gamma": 0.9999
   },
+  "best_val_step": 719,
+  "best_val_spectral_loss_like_50_12k": 0.1317743188031723,
+  "best_val_spectral_dev_db_50_12k": 3.800093956365922,
+  "training_band_k_count": 239001,
+  "band_k_min_loss": 1000,
+  "band_k_max_loss": 240000,
+  "train_band_k_count": 191201,
+  "val_band_k_count": 47800,
   "comparison_mode": "u_only",
   "mod_depth": 0.0,
   "detune": 0.0,
