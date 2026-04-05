@@ -1,145 +1,268 @@
-import sys, os, math, numpy as np
-from scipy.io import wavfile
+#!/usr/bin/env python3
+"""Batch IR analysis for tiny DiffFDN experiments."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy.io import wavfile
 
-def load_mono_norm(path):
-    fs, x = wavfile.read(path)
-    x = x.astype(np.float32)
-    if x.ndim == 2:
-        x = x.mean(axis=1)
-    # trim leading silence (threshold -60 dB)
-    thr = 10**(-60/20)
+
+def _infer_matrix_type(name: str) -> str:
+    lower = name.lower()
+    if "house" in lower:
+        return "householder"
+    if "had" in lower:
+        return "hadamard"
+    return "unknown"
+
+
+def load_ir_mono(path: Path) -> Tuple[int, np.ndarray]:
+    sr, data = wavfile.read(str(path))
+    if data.ndim == 2:
+        x = data.astype(np.float64).mean(axis=1)
+    else:
+        x = data.astype(np.float64)
+
+    if np.issubdtype(data.dtype, np.integer):
+        full_scale = max(abs(np.iinfo(data.dtype).min), np.iinfo(data.dtype).max)
+        x /= float(full_scale)
+
+    # Trim leading silence (up to first 0.5 s) using -60 dB threshold.
+    thr = 10.0 ** (-60.0 / 20.0)
+    scan_n = min(len(x), int(0.5 * sr))
     start = 0
-    for i in range(min(len(x), int(0.5*fs))):
+    for i in range(scan_n):
         if abs(x[i]) > thr:
-            start = i; break
-    x = x[start:]
-    # normalize to unity peak (avoid div0)
-    peak = max(1e-9, float(np.max(np.abs(x))))
-    x = x / peak
-    return fs, x
+            start = i
+            break
+    if start > 0:
+        x = x[start:]
 
-def schroeder_edc(x):
-    edc = np.cumsum(x[::-1]**2)[::-1]
-    edc = np.maximum(edc, 1e-20)
-    edc_db = 10*np.log10(edc)
-    edc_db -= edc_db[0]
+    peak = max(float(np.max(np.abs(x))), 1e-12)
+    x = x / peak
+    return sr, x
+
+
+def schroeder_edc_db(x: np.ndarray) -> np.ndarray:
+    energy = np.cumsum((x[::-1] ** 2))[::-1]
+    energy = np.maximum(energy, 1e-20)
+    edc_db = 10.0 * np.log10(energy / energy[0])
     return edc_db
 
-def fit_rt60(t, edc_db, lo=-35.0, hi=-5.0):
-    mask = (edc_db <= hi) & (edc_db >= lo)
-    if not np.any(mask):
-        return np.nan, np.nan, None
-    p = np.polyfit(t[mask], edc_db[mask], 1)  # dB vs s
-    slope, intercept = p[0], p[1]
-    if slope >= 0:
-        return np.nan, np.nan, (slope, intercept, mask)
-    rt60 = -60.0 / slope
-    edt  = -10.0 / slope * 1000.0  # ms
-    return rt60, edt, (slope, intercept, mask)
 
-def echo_density(x, fs, win_ms=10, step_ms=5, thr_rel=0.02):
-    win = max(8, int((win_ms/1000.0)*fs))
-    step = max(1, int((step_ms/1000.0)*fs))
-    # simple peak detector (strict local maxima) with relative threshold
-    absmax = max(1e-6, float(np.max(np.abs(x))))
-    thr = thr_rel * absmax
-    peaks = np.r_[False, (x[1:-1] > x[:-2]) & (x[1:-1] >= x[2:]), False] & (np.abs(x) > thr)
-    idxs = range(0, len(x)-win, step)
-    times = np.array([(i+win/2)/fs for i in idxs], dtype=np.float32)
-    density = np.array([ peaks[i:i+win].sum() * (fs/win) for i in idxs ], dtype=np.float32)  # peaks/s
-    return times, density
+def fit_decay(
+    t: np.ndarray, edc_db: np.ndarray, upper_db: float, lower_db: float
+) -> Tuple[float, Optional[Tuple[float, float, np.ndarray]]]:
+    mask = (edc_db <= upper_db) & (edc_db >= lower_db)
+    if int(np.sum(mask)) < 8:
+        return np.nan, None
 
-def spectral_centroid(x, fs, hop_ms=10, win_ms=40):
-    hop = max(1, int((hop_ms/1000.0)*fs))
-    win = max(hop, int((win_ms/1000.0)*fs))
-    w = np.hanning(win)
-    cents_t, cents = [], []
-    i = 0
-    while i+win <= len(x):
-        seg = x[i:i+win] * w
-        spec = np.abs(np.fft.rfft(seg))
-        freqs = np.fft.rfftfreq(win, d=1/fs)
-        s = spec.sum()
-        c = (freqs @ spec) / s if s > 1e-12 else 0.0
-        cents_t.append((i+win/2)/fs)
-        cents.append(c)
-        i += hop
-    return np.array(cents_t), np.array(cents)
+    slope, intercept = np.polyfit(t[mask], edc_db[mask], 1)
+    if slope >= 0.0:
+        return np.nan, (slope, intercept, mask)
 
-def analyze_one(path):
-    fs, x = load_mono_norm(path)
-    t = np.arange(len(x))/fs
-    edc_db = schroeder_edc(x)
-    rt60, edt_ms, fitinfo = fit_rt60(t, edc_db, lo=-35, hi=-5)
-    times_d, dens = echo_density(x, fs, win_ms=10, step_ms=5, thr_rel=0.02)
-    t_sc, sc = spectral_centroid(x, fs, hop_ms=10, win_ms=40)
-    return dict(fs=fs, t=t, x=x, edc_db=edc_db, rt60=rt60, edt_ms=edt_ms,
-                fitinfo=fitinfo, times_d=times_d, dens=dens, t_sc=t_sc, sc=sc)
+    rt60_equiv = -60.0 / slope
+    return float(rt60_equiv), (float(slope), float(intercept), mask)
 
-def label_from_filename(fn):
-    base = os.path.basename(fn).lower()
-    m = "Hadamard" if "had" in base else ("Householder" if "house" in base else "UnknownM")
-    d = "Spread" if "spread" in base else ("Prime" if "prime" in base else "UnknownD")
-    return f"{m}-{d}"
 
-def main(args):
-    if len(args) < 2:
-        print("Usage: python analyze_ir_batch.py IR1.wav IR2.wav [IR3.wav ...]")
-        sys.exit(1)
-    os.makedirs("eval/figs", exist_ok=True)
+def echo_density_proxy(x: np.ndarray, sr: int) -> float:
+    win = max(8, int(0.010 * sr))
+    step = max(1, int(0.005 * sr))
+    peaks = np.r_[
+        False, (x[1:-1] > x[:-2]) & (x[1:-1] >= x[2:]), False
+    ] & (np.abs(x) > 0.02)
 
-    results = []
-    for path in args[1:]:
-        res = analyze_one(path)
-        res["path"] = path
-        res["label"] = label_from_filename(path)
-        results.append(res)
+    densities = []
+    for i in range(0, max(0, len(x) - win), step):
+        density_ps = float(np.sum(peaks[i : i + win])) * (float(sr) / float(win))
+        t_center = (i + 0.5 * win) / float(sr)
+        if 0.05 <= t_center <= 0.30:
+            densities.append(density_ps)
+    if not densities:
+        return 0.0
+    return float(np.mean(densities))
 
-    # ---- Summary CSV ----
-    with open("eval/figs/summary.csv", "w") as f:
-        f.write("file,label,rt60_s,edt_ms,peak_density_100ms_s,mean_density_s\n")
-        for r in results:
-            # simple density stats (peak in first 300ms window region)
-            sel = r["times_d"] <= 0.3
-            peak_100 = float(np.max(r["dens"][sel])) if np.any(sel) else float(np.max(r["dens"]))
-            f.write(f'{r["path"]},{r["label"]},{r["rt60"]:.4f},{r["edt_ms"]:.2f},{peak_100:.2f},{float(np.mean(r["dens"])):.2f}\n')
 
-    # ---- Combined plots ----
-    # 1) EDC overlays + fit lines + legend
-    plt.figure(figsize=(8,4))
-    for r in results:
-        plt.plot(r["t"], r["edc_db"], label=f'{r["label"]}  (RT60≈{r["rt60"]:.2f}s, EDT≈{r["edt_ms"]:.0f}ms)')
-        if r["fitinfo"] is not None:
-            slope, intercept, mask = r["fitinfo"]
-            tt = np.array([r["t"][mask].min(), r["t"][mask].max()])
-            plt.plot(tt, slope*tt + intercept, "--")
-    plt.axhline(-5, color="0.8", lw=0.8); plt.axhline(-35, color="0.8", lw=0.8)
-    plt.xlabel("Time (s)"); plt.ylabel("EDC (dB)"); plt.title("Energy Decay Curves (Schroeder)")
-    plt.legend(fontsize=8); plt.tight_layout()
-    plt.savefig("eval/figs/edc_overlay.png", dpi=150)
+def ringiness_proxy(x: np.ndarray) -> float:
+    if len(x) < 512:
+        return 0.0
+    start = int(0.20 * len(x))
+    end = int(0.80 * len(x))
+    if end - start < 512:
+        start = max(0, len(x) - 4096)
+        end = len(x)
+    tail = x[start:end]
+    if len(tail) < 512:
+        return 0.0
 
-    # 2) Echo density (events/s) overlays
-    plt.figure(figsize=(8,3))
-    for r in results:
-        plt.plot(r["times_d"], r["dens"], label=r["label"])
-    plt.xlabel("Time (s)"); plt.ylabel("Peaks per second"); plt.title("Echo density (10 ms window)")
-    plt.legend(fontsize=8); plt.tight_layout()
-    plt.savefig("eval/figs/density_overlay.png", dpi=150)
+    win = np.hanning(len(tail))
+    spec = np.abs(np.fft.rfft(tail * win))
+    mean_mag = float(np.mean(spec)) + 1e-12
+    peak_mag = float(np.max(spec))
+    return float(peak_mag / mean_mag)
 
-    # 3) Spectral centroid (perceptual brightness proxy)
-    plt.figure(figsize=(8,3))
-    for r in results:
-        plt.plot(r["t_sc"], r["sc"], label=r["label"])
-    plt.xlabel("Time (s)"); plt.ylabel("Spectral centroid (Hz)"); plt.title("Brightness vs time")
-    plt.legend(fontsize=8); plt.tight_layout()
-    plt.savefig("eval/figs/centroid_overlay.png", dpi=150)
 
-    print("Wrote:")
-    print("  eval/figs/summary.csv")
-    print("  eval/figs/edc_overlay.png")
-    print("  eval/figs/density_overlay.png")
-    print("  eval/figs/centroid_overlay.png")
+def load_sidecar(path: Path) -> Dict[str, object]:
+    meta_path = path.with_suffix(path.suffix + ".json")
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def analyze_one(path: Path) -> Dict[str, object]:
+    sr, x = load_ir_mono(path)
+    t = np.arange(len(x), dtype=np.float64) / float(sr)
+    edc_db = schroeder_edc_db(x)
+
+    rt60_t30, _ = fit_decay(t, edc_db, upper_db=-5.0, lower_db=-35.0)
+    rt60_t20, _ = fit_decay(t, edc_db, upper_db=-5.0, lower_db=-25.0)
+    edt, _ = fit_decay(t, edc_db, upper_db=0.0, lower_db=-10.0)
+
+    rt60 = rt60_t30 if np.isfinite(rt60_t30) else rt60_t20
+    rt60_method = "T30" if np.isfinite(rt60_t30) else ("T20" if np.isfinite(rt60_t20) else "none")
+
+    metadata = load_sidecar(path)
+    config_id = str(metadata.get("config_id", path.stem))
+    matrix_type = str(metadata.get("matrix_type", _infer_matrix_type(path.stem)))
+
+    return {
+        "path": str(path),
+        "name": path.stem,
+        "sr": int(sr),
+        "config_id": config_id,
+        "matrix_type": matrix_type,
+        "t": t,
+        "edc_db": edc_db,
+        "rt60_s": float(rt60) if np.isfinite(rt60) else np.nan,
+        "rt60_method": rt60_method,
+        "edt_s": float(edt) if np.isfinite(edt) else np.nan,
+        "ringiness": ringiness_proxy(x),
+        "echo_density_ps": echo_density_proxy(x, sr),
+    }
+
+
+def write_summary_csv(rows: List[Dict[str, object]], out_csv: Path) -> None:
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "file",
+        "config_id",
+        "matrix_type",
+        "sr",
+        "rt60_s",
+        "rt60_method",
+        "edt_s",
+        "ringiness",
+        "echo_density_ps",
+    ]
+    with out_csv.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(
+                {
+                    "file": r["path"],
+                    "config_id": r["config_id"],
+                    "matrix_type": r["matrix_type"],
+                    "sr": r["sr"],
+                    "rt60_s": f"{r['rt60_s']:.6f}" if np.isfinite(r["rt60_s"]) else "",
+                    "rt60_method": r["rt60_method"],
+                    "edt_s": f"{r['edt_s']:.6f}" if np.isfinite(r["edt_s"]) else "",
+                    "ringiness": f"{r['ringiness']:.6f}",
+                    "echo_density_ps": f"{r['echo_density_ps']:.6f}",
+                }
+            )
+
+
+def make_plots(rows: List[Dict[str, object]], fig_dir: Path) -> None:
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    color_by_matrix = {
+        "householder": "tab:blue",
+        "hadamard": "tab:orange",
+        "unknown": "tab:gray",
+    }
+
+    # 1) EDC overlay
+    plt.figure(figsize=(9, 4))
+    for r in rows:
+        color = color_by_matrix.get(str(r["matrix_type"]).lower(), "tab:gray")
+        plt.plot(r["t"], r["edc_db"], lw=1.3, color=color, alpha=0.9, label=f"{r['config_id']} ({r['matrix_type']})")
+    plt.axhline(-5.0, color="0.8", lw=0.8)
+    plt.axhline(-25.0, color="0.9", lw=0.8)
+    plt.axhline(-35.0, color="0.9", lw=0.8)
+    plt.xlabel("Time (s)")
+    plt.ylabel("EDC (dB)")
+    plt.title("EDC Overlay by Matrix Type")
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(fig_dir / "edc_overlay.png", dpi=160)
+    plt.close()
+
+    labels = [str(r["config_id"]) for r in rows]
+    x = np.arange(len(rows))
+    rt60_vals = np.array([float(r["rt60_s"]) if np.isfinite(r["rt60_s"]) else 0.0 for r in rows], dtype=np.float64)
+    edt_vals = np.array([float(r["edt_s"]) if np.isfinite(r["edt_s"]) else 0.0 for r in rows], dtype=np.float64)
+
+    # 2) RT60/EDT bars
+    plt.figure(figsize=(9, 4))
+    width = 0.38
+    plt.bar(x - width / 2.0, rt60_vals, width=width, label="RT60 (s)")
+    plt.bar(x + width / 2.0, edt_vals, width=width, label="EDT (s)")
+    plt.xticks(x, labels, rotation=25, ha="right")
+    plt.ylabel("Seconds")
+    plt.title("RT60 and EDT Across Configs")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(fig_dir / "rt60_edt_bars.png", dpi=160)
+    plt.close()
+
+    # 3) Ringiness bars
+    ring_vals = np.array([float(r["ringiness"]) for r in rows], dtype=np.float64)
+    bar_colors = [color_by_matrix.get(str(r["matrix_type"]).lower(), "tab:gray") for r in rows]
+    plt.figure(figsize=(9, 4))
+    plt.bar(x, ring_vals, color=bar_colors)
+    plt.xticks(x, labels, rotation=25, ha="right")
+    plt.ylabel("Peak/Mean Spectrum Ratio")
+    plt.title("Ringiness Proxy Across Configs")
+    plt.tight_layout()
+    plt.savefig(fig_dir / "ringiness_bars.png", dpi=160)
+    plt.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ir-dir", default="eval/out/ir", help="Folder containing WAV IR files")
+    parser.add_argument("--pattern", default="*.wav", help="Glob pattern inside ir-dir")
+    parser.add_argument("--fig-dir", default="eval/figs", help="Output figure folder")
+    args = parser.parse_args()
+
+    ir_dir = Path(args.ir_dir)
+    wavs = sorted(ir_dir.glob(args.pattern))
+    if not wavs:
+        raise SystemExit(f"No WAV files found in {ir_dir} with pattern {args.pattern}")
+
+    rows = [analyze_one(wav) for wav in wavs]
+
+    fig_dir = Path(args.fig_dir)
+    out_csv = fig_dir / "summary.csv"
+    write_summary_csv(rows, out_csv)
+    make_plots(rows, fig_dir)
+
+    print(f"Wrote summary: {out_csv}")
+    print(f"Wrote figure: {fig_dir / 'edc_overlay.png'}")
+    print(f"Wrote figure: {fig_dir / 'rt60_edt_bars.png'}")
+    print(f"Wrote figure: {fig_dir / 'ringiness_bars.png'}")
+
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()

@@ -1,0 +1,85 @@
+{
+  "config_id": "householder_prime_rt60_2p8_paper_seed4_u_only",
+  "sr": 48000,
+  "fs": 48000,
+  "nfft": 2048,
+  "M": 480000,
+  "batch": 2000,
+  "epochs": 3,
+  "delay_samples": [
+    1499,
+    2377,
+    3217,
+    4421
+  ],
+  "rt60": 2.8,
+  "rt60_target": 2.8,
+  "steps": 720,
+  "steps_per_epoch": 240,
+  "lr": 0.001,
+  "gamma": 0.9999486043321197,
+  "gamma_used": 0.9999486043321197,
+  "gamma_source": "rt60_target",
+  "train_lossless": true,
+  "optimize_with_decay": false,
+  "gamma_train": 1.0,
+  "alpha_density": 0.05,
+  "alpha_sparsity": 0.05,
+  "spectral_mode": "unity",
+  "freq_bins_per_step": 2000,
+  "learn_io": true,
+  "seed": 4,
+  "gains": [
+    0.9258490356932044,
+    0.8849973378134331,
+    0.8476019833822931,
+    0.7967406292535046
+  ],
+  "gains_training": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "matrix_type": "householder",
+  "fixed_u": [
+    0.5,
+    0.5,
+    0.5,
+    0.5
+  ],
+  "u": [
+    -0.5533967912671014,
+    0.0696044992912495,
+    0.7775355733278949,
+    0.2904232037963782
+  ],
+  "b": [
+    0.25,
+    0.25,
+    0.25,
+    0.25
+  ],
+  "cL": [
+    0.5,
+    -0.5,
+    0.5,
+    -0.5
+  ],
+  "cR": [
+    0.5,
+    0.5,
+    -0.5,
+    -0.5
+  ],
+  "losses": {
+    "total": 18794092236.7963,
+    "spectral": 18794092236.77301,
+    "sparsity": 0.4657654569610499
+  },
+  "comparison_mode": "u_only",
+  "mod_depth": 0.0,
+  "detune": 0.0,
+  "damp_hz": 1000000000.0,
+  "compare_lti_enforced": true
+}

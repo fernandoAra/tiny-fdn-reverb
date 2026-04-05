@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="730" viewBox="0 0 1500 730" role="img" aria-labelledby="title desc">
+<title id="title">Unilossless feedback mixing in a 4x4 FDN</title>
+<desc id="desc">Two-panel academic-style figure showing the feedback matrix as a mixing stage in a 4x4 feedback delay network and illustrating Hadamard and Householder unilossless matrix families.</desc>
+<defs>
+<marker id="arrow" markerWidth="11" markerHeight="11" refX="9.5" refY="5.5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 11 5.5 L 0 11 z" fill="#222222" /></marker>
+<style><![CDATA[
+svg { background: #ffffff; }
+text { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; dominant-baseline: middle; }
+]]></style>
+</defs>
+<rect x="0" y="0" width="1500" height="730" fill="#ffffff" />
+<rect x="60" y="45" width="660" height="620" rx="0" fill="#ffffff" stroke="#222222" stroke-width="2.2" />
+<text x="96" y="83" text-anchor="middle" font-size="24" font-weight="600" fill="#222222" font-style="normal">(a)</text>
+<text x="390.0" y="83" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">Feedback matrix as mixing stage</text>
+<text x="238" y="137" text-anchor="middle" font-size="22" font-weight="500" fill="#222222" font-style="normal">Delay-line outputs</text>
+<text x="623" y="137" text-anchor="middle" font-size="22" font-weight="500" fill="#222222" font-style="normal">Mixed inputs</text>
+<rect x="332" y="200" width="210" height="335" rx="0" fill="#f6f6f6" stroke="#222222" stroke-width="2.6" />
+<line x1="354" y1="255" x2="520" y2="415" fill="none" stroke="#5a5a5a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+<line x1="354" y1="335" x2="520" y2="255" fill="none" stroke="#5a5a5a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+<line x1="354" y1="415" x2="520" y2="495" fill="none" stroke="#5a5a5a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+<line x1="354" y1="495" x2="520" y2="335" fill="none" stroke="#5a5a5a" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+<text x="437.0" y="269" text-anchor="middle" font-size="26" font-weight="600" fill="#222222"><tspan x="437.0" dy="0">Feedback</tspan><tspan x="437.0" dy="30">matrix A</tspan></text>
+<text x="130" y="255" text-anchor="end" font-size="24" font-weight="400" fill="#222222" xml:space="preserve"><tspan font-style="italic">d</tspan><tspan font-size="16" baseline-shift="sub">1</tspan></text>
+<line x1="148" y1="255" x2="332" y2="255" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<line x1="542" y1="255" x2="625" y2="255" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<text x="662" y="255" text-anchor="start" font-size="22" font-weight="400" fill="#5a5a5a" xml:space="preserve"><tspan font-style="italic">u</tspan><tspan font-size="14" baseline-shift="sub">1</tspan></text>
+<text x="130" y="335" text-anchor="end" font-size="24" font-weight="400" fill="#222222" xml:space="preserve"><tspan font-style="italic">d</tspan><tspan font-size="16" baseline-shift="sub">2</tspan></text>
+<line x1="148" y1="335" x2="332" y2="335" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<line x1="542" y1="335" x2="625" y2="335" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<text x="662" y="335" text-anchor="start" font-size="22" font-weight="400" fill="#5a5a5a" xml:space="preserve"><tspan font-style="italic">u</tspan><tspan font-size="14" baseline-shift="sub">2</tspan></text>
+<text x="130" y="415" text-anchor="end" font-size="24" font-weight="400" fill="#222222" xml:space="preserve"><tspan font-style="italic">d</tspan><tspan font-size="16" baseline-shift="sub">3</tspan></text>
+<line x1="148" y1="415" x2="332" y2="415" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<line x1="542" y1="415" x2="625" y2="415" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<text x="662" y="415" text-anchor="start" font-size="22" font-weight="400" fill="#5a5a5a" xml:space="preserve"><tspan font-style="italic">u</tspan><tspan font-size="14" baseline-shift="sub">3</tspan></text>
+<text x="130" y="495" text-anchor="end" font-size="24" font-weight="400" fill="#222222" xml:space="preserve"><tspan font-style="italic">d</tspan><tspan font-size="16" baseline-shift="sub">4</tspan></text>
+<line x1="148" y1="495" x2="332" y2="495" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<line x1="542" y1="495" x2="625" y2="495" fill="none" stroke="#222222" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" />
+<text x="662" y="495" text-anchor="start" font-size="22" font-weight="400" fill="#5a5a5a" xml:space="preserve"><tspan font-style="italic">u</tspan><tspan font-size="14" baseline-shift="sub">4</tspan></text>
+<rect x="780" y="45" width="660" height="620" rx="0" fill="#ffffff" stroke="#222222" stroke-width="2.2" />
+<text x="816" y="83" text-anchor="middle" font-size="24" font-weight="600" fill="#222222" font-style="normal">(b)</text>
+<text x="1110.0" y="83" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">Examples of unilossless matrix families</text>
+<line x1="1110.0" y1="127" x2="1110.0" y2="623" fill="none" stroke="#c9c9c9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+<text x="945.0" y="177" text-anchor="middle" font-size="25" font-weight="500" fill="#222222" font-style="normal">Normalized Hadamard</text>
+<text x="854.0" y="343" text-anchor="end" font-size="26" font-weight="500" fill="#222222" font-style="normal">1/2 x</text>
+<rect x="888.0" y="235" width="216" height="216" rx="0" fill="#ffffff" stroke="#222222" stroke-width="2.2" />
+<rect x="888.0" y="235" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="915.0" y="263.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="942.0" y="235" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="969.0" y="263.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="996.0" y="235" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1023.0" y="263.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="1050.0" y="235" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1077.0" y="263.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="888.0" y="289" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="915.0" y="317.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="942.0" y="289" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="969.0" y="317.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="996.0" y="289" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1023.0" y="317.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="1050.0" y="289" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1077.0" y="317.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="888.0" y="343" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="915.0" y="371.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="942.0" y="343" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="969.0" y="371.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="996.0" y="343" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1023.0" y="371.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="1050.0" y="343" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1077.0" y="371.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="888.0" y="397" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="915.0" y="425.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="942.0" y="397" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="969.0" y="425.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="996.0" y="397" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1023.0" y="425.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">-</text>
+<rect x="1050.0" y="397" width="54" height="54" rx="0" fill="#f6f6f6" stroke="#c9c9c9" stroke-width="1.2" />
+<text x="1077.0" y="425.0" text-anchor="middle" font-size="28" font-weight="500" fill="#222222" font-style="normal">+</text>
+<rect x="888.0" y="235" width="216" height="216" rx="0" fill="none" stroke="#222222" stroke-width="2.2" />
+<text x="945.0" y="590" text-anchor="middle" font-size="20" font-weight="500" fill="#5a5a5a"><tspan x="945.0" dy="0">Fixed structured</tspan><tspan x="945.0" dy="24">orthogonal mixer</tspan></text>
+<text x="1275.0" y="177" text-anchor="middle" font-size="25" font-weight="500" fill="#222222" font-style="normal">Householder form</text>
+<text x="1275.0" y="331" text-anchor="middle" font-size="34" font-weight="500" fill="#222222" xml:space="preserve"><tspan font-style="italic">H</tspan><tspan > = I - 2 </tspan><tspan font-style="italic">u</tspan><tspan > </tspan><tspan font-style="italic">u</tspan><tspan font-size="24" baseline-shift="super">T</tspan></text>
+<text x="1275.0" y="590" text-anchor="middle" font-size="20" font-weight="500" fill="#5a5a5a"><tspan x="1275.0" dy="0">Compact parameterized</tspan><tspan x="1275.0" dy="26">orthogonal mixer</tspan></text>
+</svg>

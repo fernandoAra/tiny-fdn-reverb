@@ -1,0 +1,5 @@
+restart_idx,restart_seed,selection_metric,selection_value,best_val_spectral_loss_like_50_12k,best_val_spectral_dev_db_50_12k,has_learned_io,preset_path
+0,1000,best_val_spectral_dev_db_50_12k,4.355231519262063,0.21170443771952818,4.355231519262063,True,/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_bank_seed1_r0.json
+1,1001,best_val_spectral_dev_db_50_12k,3.834627867694157,0.19102938419733237,3.834627867694157,True,/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_bank_seed1_r1.json
+2,1002,best_val_spectral_dev_db_50_12k,3.699631373529109,0.18288626466352362,3.699631373529109,True,/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_bank_seed1_r2.json
+3,1003,best_val_spectral_dev_db_50_12k,3.623244273486056,0.17389004371352867,3.623244273486056,True,/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_bank_seed1_r3.json

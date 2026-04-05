@@ -1,0 +1,10 @@
+metric,direction,wins_u_only,wins_full,n_seeds
+spectral_loss_like,lower,2,5,5
+spectral_loss_like_50_12k,lower,2,5,5
+spectral_dev_db,lower,5,5,5
+spectral_dev_db_50_12k,lower,5,5,5
+rt60_s,target,0,0,5
+edt_s,target,0,0,5
+ringiness,lower,3,5,5
+kurtosis_mean_50_300ms,lower,1,0,5
+echo_density_events_per_s_50_300ms,higher,0,0,5

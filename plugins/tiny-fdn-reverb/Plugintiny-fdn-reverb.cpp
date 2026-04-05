@@ -5,13 +5,15 @@
 #include <array>
 #include <numeric>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 // Boilerplate: very lightweight logger to /tmp/tfdn.log
 // (generic helper, not core DSP logic)
 
 // Uncomment to enable heavy logging (NOT RT-safe in production!)
-#define TFDN_ENABLE_LOG 1
+// #define TFDN_ENABLE_LOG 1
 
 #if defined(TFDN_ENABLE_LOG)
 static FILE* gTFDNLog = nullptr;
@@ -40,6 +42,11 @@ START_NAMESPACE_DISTRHO
 // Avoid relying on M_PI
 static constexpr double kPI = 3.14159265358979323846;
 
+constexpr int PluginTinyFdnReverb::kMaxDelay;
+constexpr std::array<int, PluginTinyFdnReverb::kN> PluginTinyFdnReverb::kBasePrime48;
+constexpr std::array<int, PluginTinyFdnReverb::kN> PluginTinyFdnReverb::kBaseSpread48;
+constexpr int PluginTinyFdnReverb::kIRMax;
+
 struct Preset {
     const char* name;
     float params[PluginTinyFdnReverb::paramCount];
@@ -57,6 +64,7 @@ static const Preset kPresets[] = {
 };
 
 static const uint32_t kPresetCount = sizeof(kPresets)/sizeof(kPresets[0]);
+static const uint32_t kStateCount = 1;
 
 static inline void dump_state_lengths(const char* tag,
                                       int matrixType, int delaySet,
@@ -72,7 +80,7 @@ static inline void dump_state_lengths(const char* tag,
 }
 
 PluginTinyFdnReverb::PluginTinyFdnReverb()
-    : Plugin(paramCount, kPresetCount, 0)
+    : Plugin(paramCount, kPresetCount, kStateCount)
     , fLastSR(0.0)
     , fRt60(2.80f)
     , fMix(1.00f)
@@ -86,12 +94,41 @@ PluginTinyFdnReverb::PluginTinyFdnReverb()
         mLen[i] = 64;
         mGain[i] = 0.0f;
     }
+
+    normalizeHouseholderU(mHouseholderUFixed);
+    mHouseholderUDiff = mHouseholderUFixed;
+    mHouseholderUActive = mHouseholderUFixed;
+
+    for (auto& slot : mEnvTraceBits)
+        slot.store(0u, std::memory_order_relaxed);
+    mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+    mEDTmsBits.store(0u, std::memory_order_relaxed);
+    mRT60sBits.store(0u, std::memory_order_relaxed);
+    mDen100Bits.store(0u, std::memory_order_relaxed);
+    mDen300Bits.store(0u, std::memory_order_relaxed);
+    mRinginessBits.store(0u, std::memory_order_relaxed);
+    mWetEnvBits.store(0u, std::memory_order_relaxed);
+    mUiMatrixMorphRequestBits.store(floatToBits(fMatrixMorph), std::memory_order_relaxed);
+    mUiMatrixMorphRequestSeq.store(0u, std::memory_order_relaxed);
+    mAppliedUiMatrixMorphRequestSeq = 0u;
+    fMatrixMorphApplied = fMatrixMorph;
+    mUiStateMorphTargetBits.store(floatToBits(fMatrixMorph), std::memory_order_relaxed);
+    mUiStateMorphAppliedBits.store(floatToBits(fMatrixMorphApplied), std::memory_order_relaxed);
+    mUiStateHouseholderMode.store(fHouseholderMode, std::memory_order_relaxed);
+    mUiStateDiffRoutingMode.store(mDiffRoutingMode, std::memory_order_relaxed);
+    mUiStatePresetIndex.store(-1, std::memory_order_relaxed);
+    for (uint32_t i = 0; i < kUiMatrixSize; ++i) {
+        mUiStateActiveUBits[i].store(floatToBits(mHouseholderUActive[i]), std::memory_order_relaxed);
+        mUiStateActiveBBits[i].store(floatToBits(mInjectionBActive[i]), std::memory_order_relaxed);
+        mUiStateActiveCLBits[i].store(floatToBits(mOutputCLActive[i]), std::memory_order_relaxed);
+        mUiStateActiveCRBits[i].store(floatToBits(mOutputCRActive[i]), std::memory_order_relaxed);
+    }
 }
 
-const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_v0.1"; }
+const char* PluginTinyFdnReverb::getLabel()   const { return "tiny-fdn-reverb_1.33"; }
 const char* PluginTinyFdnReverb::getMaker()   const { return "Fernando Ara"; }
 const char* PluginTinyFdnReverb::getLicense() const { return "MIT"; }
-uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(0,3,1); } // DEMO R4+
+uint32_t    PluginTinyFdnReverb::getVersion() const { return d_version(1,33,0); }
 int64_t     PluginTinyFdnReverb::getUniqueId() const { return d_cconst('t','f','d','n'); }
 
 void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
@@ -107,7 +144,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         break;
     case paramMatrixType:
         p.name = "MatrixType"; p.symbol = "matrix";
-        p.hints |= kParameterIsInteger;
+        p.hints = kParameterIsOutput | kParameterIsInteger;
         p.ranges = { 0.0f, 1.0f, float(fMatrixType) };
         break;
     case paramDelaySet:
@@ -125,7 +162,7 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.ranges = { 1500.0f, 12000.0f, fDampHz };
         break;
     case paramMatrixMorph:
-        p.hints  = kParameterIsAutomable;
+        p.hints  = kParameterIsOutput;
         p.name   = "Matrix Morph"; p.symbol = "mmorph";
         p.ranges = { 0.0f, 1.0f, fMatrixMorph };
         break;
@@ -178,6 +215,14 @@ void PluginTinyFdnReverb::initParameter(uint32_t i, Parameter& p) {
         p.hints = kParameterIsOutput;
         p.name  = "Ringiness"; p.symbol = "ring";
         p.ranges= {0.f, 1.f, 0.f}; break;
+    case paramWetEnv:
+        p.hints = kParameterIsOutput;
+        p.name  = "Wet Env"; p.symbol = "wetenv";
+        p.ranges= {0.f, 1.f, 0.f}; break;
+    case paramHouseholderMode:
+        p.hints = kParameterIsInteger | kParameterIsBoolean;
+        p.name  = "Householder Mode"; p.symbol = "housemode";
+        p.ranges= {0.f, 1.f, float(fHouseholderMode)}; break;
 
     default: break;
     }
@@ -187,7 +232,7 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     switch (i) {
     case paramRt60:         return fRt60;
     case paramMix:          return fMix;
-    case paramMatrixType:   return float(fMatrixType);
+    case paramMatrixType:   return (fMatrixMorph < 0.5f) ? 0.0f : 1.0f;
     case paramDelaySet:     return float(fDelaySet);
     case paramSize:         return fSize;
     case paramDampHz:       return fDampHz;
@@ -199,11 +244,13 @@ float PluginTinyFdnReverb::getParameterValue(uint32_t i) const {
     case paramMetalBoost:   return float(fMetalBoost);
     case paramExciteNoise:  return 0.0f;
 
-    case paramEDTms:        return mEDTms;
-    case paramRT60est:      return mRT60s;
-    case paramDensity100ms: return mDen100;
-    case paramDensity300ms: return mDen300;
-    case paramRinginess:    return mRinginess;
+    case paramEDTms:        return bitsToFloat(mEDTmsBits.load(std::memory_order_relaxed));
+    case paramRT60est:      return bitsToFloat(mRT60sBits.load(std::memory_order_relaxed));
+    case paramDensity100ms: return bitsToFloat(mDen100Bits.load(std::memory_order_relaxed));
+    case paramDensity300ms: return bitsToFloat(mDen300Bits.load(std::memory_order_relaxed));
+    case paramRinginess:    return bitsToFloat(mRinginessBits.load(std::memory_order_relaxed));
+    case paramWetEnv:       return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
+    case paramHouseholderMode:return float(fHouseholderMode);
 
     default:                return 0.0f;
     }
@@ -216,12 +263,8 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
     case paramMix:
         fMix = v;  /*no log*/ break;
     case paramMatrixType: {
-        const int old = fMatrixType;
-        fMatrixType = int(std::round(v));
-        DBG("[PARAM] MatrixType=%d (%s) requested", fMatrixType, fMatrixType? "Householder":"Hadamard");
-        if (fMatrixType != old) {
-            // handled in run(): will reset safely and log
-        }
+        (void)v;
+        DBG("[DSP] MatrixType host set %.3f ignored (compat/output-only)", double(v));
         break;
     }
     case paramDelaySet: {
@@ -237,8 +280,10 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fSize = v; DBG("[PARAM] Size=%.3f requested", double(fSize)); break;
     case paramDampHz:
         fDampHz = v; /*no log*/ break;
-    case paramMatrixMorph:
-        fMatrixMorph = v; /*no log*/ break;
+    case paramMatrixMorph: {
+        DBG("[DSP] MatrixMorph host set %.3f ignored (compat/output-only)", double(v));
+        break;
+    }
     case paramPing:
         fPing = (v >= 0.5f); /*no log*/ break;
 
@@ -250,6 +295,14 @@ void PluginTinyFdnReverb::setParameterValue(uint32_t i, float v) {
         fMetalBoost = (v >= 0.5f); DBG("[PARAM] MetalBoost=%d", fMetalBoost); break;
     case paramExciteNoise:
         fExciteNoise = (v >= 0.5f); DBG("[PARAM] NoiseBurst=%d", fExciteNoise); break;
+    case paramHouseholderMode:
+        {
+            fHouseholderMode = (v >= 0.5f) ? 1 : 0;
+            std::fprintf(stderr, "[DSP] recv HouseholderMode=%d (%s)\n",
+                         fHouseholderMode,
+                         fHouseholderMode ? "Diff" : "Fixed");
+        }
+        break;
 
     default: break;
     }
@@ -260,14 +313,13 @@ void PluginTinyFdnReverb::initProgramName(uint32_t i, String& name) {
 }
 
 void PluginTinyFdnReverb::loadProgram(uint32_t i) {
+    DBG("[DSP] loadProgram(%u) called", i);
     if (i < kPresetCount) {
         setParameterValue(paramRt60,         kPresets[i].params[paramRt60]);
         setParameterValue(paramMix,          kPresets[i].params[paramMix]);
-        setParameterValue(paramMatrixType,   kPresets[i].params[paramMatrixType]);
         setParameterValue(paramDelaySet,     kPresets[i].params[paramDelaySet]);
         setParameterValue(paramSize,         kPresets[i].params[paramSize]);
         setParameterValue(paramDampHz,       kPresets[i].params[paramDampHz]);
-        setParameterValue(paramMatrixMorph,  kPresets[i].params[paramMatrixMorph]);
         setParameterValue(paramModDepth,     kPresets[i].params[paramModDepth]);
         setParameterValue(paramDetune,       kPresets[i].params[paramDetune]);
         setParameterValue(paramMetalBoost,   kPresets[i].params[paramMetalBoost]);
@@ -275,16 +327,67 @@ void PluginTinyFdnReverb::loadProgram(uint32_t i) {
     }
 }
 
+#if DISTRHO_PLUGIN_WANT_STATE
+void PluginTinyFdnReverb::initState(uint32_t i, State& state)
+{
+    if (i == 0u) {
+        state.hints = kStateIsHostWritable;
+        state.key = "matrix_morph";
+        state.defaultValue = "0.000000";
+        state.label = "Matrix Morph";
+    }
+}
+
+void PluginTinyFdnReverb::setState(const char* key, const char* value)
+{
+    if (key == nullptr)
+        return;
+
+    if (std::strcmp(key, "matrix_morph") == 0) {
+        const float vm = (value != nullptr) ? std::strtof(value, nullptr) : 0.0f;
+        setMatrixMorphFromUI(vm);
+    }
+}
+#endif
+
+#if DISTRHO_PLUGIN_WANT_FULL_STATE
+String PluginTinyFdnReverb::getState(const char* key) const
+{
+    if (key != nullptr && std::strcmp(key, "matrix_morph") == 0) {
+        char tmp[32];
+        std::snprintf(tmp, sizeof(tmp), "%.6f", double(fMatrixMorph));
+        return String(tmp);
+    }
+
+    return String();
+}
+#endif
+
 void PluginTinyFdnReverb::activate() {
     fAppliedSize        = fSize;
     fAppliedDelaySet    = fDelaySet;
-    fAppliedMatrixType  = fMatrixType;
+    fAppliedMatrixType  = (fMatrixMorph < 0.5f) ? 0 : 1;
     fAppliedMetalBoost  = fMetalBoost;
+    fAppliedHouseholderMode = fHouseholderMode;
+    fAppliedDiffRoutingMode = -1;
 
     mMuteSamples      = 0;
     irWrite = 0; irCapturing = false; irReady = false; irAnalyzed = false;
     mEDTms = mRT60s = mDen100 = mDen300 = 0.f;
     mRinginess = 0.f;
+    mWetEnv = 0.f;
+    fMatrixMorphApplied = fMatrixMorph;
+    mHouseholderUActive = mHouseholderUFixed;
+    mHouseholderUDiff = mHouseholderUFixed;
+    mInjectionBDiff = mInjectionBFixed;
+    mOutputCLDiff = mOutputCLFixed;
+    mOutputCRDiff = mOutputCRFixed;
+    mInjectionBActive = mInjectionBFixed;
+    mOutputCLActive = mOutputCLFixed;
+    mOutputCRActive = mOutputCRFixed;
+    mDiffPresetHasFullIo = false;
+    mDiffRoutingMode = 0;
+    mActiveDiffPreset = nullptr;
 
     for (int k=0; k<kN; ++k) {
         std::fill(mBuf[k].begin(), mBuf[k].end(), 0.0f);
@@ -303,6 +406,20 @@ void PluginTinyFdnReverb::activate() {
     mMeterIdx = 0;
     mMeterFilled = false;
     mMeterBuf.fill(0.f);
+
+    for (auto& slot : mEnvTraceBits)
+        slot.store(0u, std::memory_order_relaxed);
+    mEnvTraceWrite.store(0u, std::memory_order_relaxed);
+    mEDTmsBits.store(0u, std::memory_order_relaxed);
+    mRT60sBits.store(0u, std::memory_order_relaxed);
+    mDen100Bits.store(0u, std::memory_order_relaxed);
+    mDen300Bits.store(0u, std::memory_order_relaxed);
+    mRinginessBits.store(0u, std::memory_order_relaxed);
+    mWetEnvBits.store(0u, std::memory_order_relaxed);
+    mUiMatrixMorphRequestBits.store(floatToBits(fMatrixMorph), std::memory_order_relaxed);
+    mUiMatrixMorphRequestSeq.store(0u, std::memory_order_relaxed);
+    mAppliedUiMatrixMorphRequestSeq = 0u;
+    publishUiState();
 
     fLastSR = 0.0;
     DBG("[ACT] init done");
@@ -353,6 +470,137 @@ void PluginTinyFdnReverb::updateLineGainsFromRt60(double sr) noexcept {
         double(mGain[2]), double(mGain[3]));
 }
 
+void PluginTinyFdnReverb::normalizeHouseholderU(std::array<float, kN>& u) noexcept
+{
+    double norm2 = 0.0;
+    for (int i = 0; i < kN; ++i)
+        norm2 += double(u[i]) * double(u[i]);
+
+    const double norm = std::sqrt(std::max(norm2, 1e-20));
+    for (int i = 0; i < kN; ++i)
+        u[i] = float(u[i] / norm);
+}
+
+bool PluginTinyFdnReverb::isFiniteVector(const std::array<float, kN>& v) noexcept
+{
+    for (int i = 0; i < kN; ++i) {
+        if (!std::isfinite(v[i]))
+            return false;
+    }
+    return true;
+}
+
+float PluginTinyFdnReverb::maxAbsDiff(const std::array<float, kN>& a, const std::array<float, kN>& b) noexcept
+{
+    float m = 0.f;
+    for (int i = 0; i < kN; ++i) {
+        const float d = std::fabs(a[i] - b[i]);
+        if (d > m)
+            m = d;
+    }
+    return m;
+}
+
+int PluginTinyFdnReverb::findDiffPresetIndex(const DiffPreset* const preset) noexcept
+{
+    if (preset == nullptr)
+        return -1;
+
+    for (std::size_t i = 0; i < kDiffPresetCount; ++i) {
+        if (&kDiffPresets[i] == preset)
+            return static_cast<int>(i);
+    }
+
+    return -1;
+}
+
+void PluginTinyFdnReverb::publishUiState() noexcept
+{
+    mUiStateMorphTargetBits.store(floatToBits(fMatrixMorph), std::memory_order_relaxed);
+    mUiStateMorphAppliedBits.store(floatToBits(fMatrixMorphApplied), std::memory_order_relaxed);
+    mUiStateHouseholderMode.store(fHouseholderMode, std::memory_order_relaxed);
+    mUiStateDiffRoutingMode.store(mDiffRoutingMode, std::memory_order_relaxed);
+    mUiStatePresetIndex.store(findDiffPresetIndex(mActiveDiffPreset), std::memory_order_relaxed);
+
+    for (uint32_t i = 0; i < kUiMatrixSize; ++i) {
+        mUiStateActiveUBits[i].store(floatToBits(mHouseholderUActive[i]), std::memory_order_relaxed);
+        mUiStateActiveBBits[i].store(floatToBits(mInjectionBActive[i]), std::memory_order_relaxed);
+        mUiStateActiveCLBits[i].store(floatToBits(mOutputCLActive[i]), std::memory_order_relaxed);
+        mUiStateActiveCRBits[i].store(floatToBits(mOutputCRActive[i]), std::memory_order_relaxed);
+    }
+}
+
+void PluginTinyFdnReverb::updateDiffPresetForContext(double sr) noexcept
+{
+    const int srInt = int(std::lround(sr));
+    const DiffPreset* preset = findDiffPreset(srInt, fDelaySet, fRt60);
+
+    if (preset == nullptr)
+        preset = findDiffPreset(srInt, -1, fRt60);
+
+    if (preset == mActiveDiffPreset)
+        return;
+
+    mActiveDiffPreset = preset;
+    if (mActiveDiffPreset == nullptr) {
+        mHouseholderUDiff = mHouseholderUFixed;
+        mInjectionBDiff = mInjectionBFixed;
+        mOutputCLDiff = mOutputCLFixed;
+        mOutputCRDiff = mOutputCRFixed;
+        mDiffPresetHasFullIo = false;
+        DBG("[DIFF] no preset match for sr=%d delaySet=%d rt60=%.3f -> fallback fixed u",
+            srInt, fDelaySet, double(fRt60));
+        return;
+    }
+
+    for (int i = 0; i < kN; ++i) {
+        mHouseholderUDiff[i] = mActiveDiffPreset->u_unit[i];
+        mInjectionBDiff[i] = mActiveDiffPreset->b[i];
+        mOutputCLDiff[i] = mActiveDiffPreset->cL[i];
+        mOutputCRDiff[i] = mActiveDiffPreset->cR[i];
+    }
+    normalizeHouseholderU(mHouseholderUDiff);
+    if (!isFiniteVector(mInjectionBDiff) || !isFiniteVector(mOutputCLDiff) || !isFiniteVector(mOutputCRDiff)) {
+        mInjectionBDiff = mInjectionBFixed;
+        mOutputCLDiff = mOutputCLFixed;
+        mOutputCRDiff = mOutputCRFixed;
+        mDiffPresetHasFullIo = false;
+    } else {
+        const float eps = 1e-5f;
+        mDiffPresetHasFullIo =
+            (maxAbsDiff(mInjectionBDiff, mInjectionBFixed) > eps) ||
+            (maxAbsDiff(mOutputCLDiff, mOutputCLFixed) > eps) ||
+            (maxAbsDiff(mOutputCRDiff, mOutputCRFixed) > eps);
+    }
+
+    DBG("[DIFF] preset=%s sr=%d delay=%s rt60=%.3f u=[%.6f %.6f %.6f %.6f] io=%s b0=%.5f b1=%.5f cL0=%.5f cL1=%.5f",
+        mActiveDiffPreset->configId,
+        mActiveDiffPreset->sr,
+        mActiveDiffPreset->delaySetName,
+        double(mActiveDiffPreset->rt60),
+        double(mHouseholderUDiff[0]),
+        double(mHouseholderUDiff[1]),
+        double(mHouseholderUDiff[2]),
+        double(mHouseholderUDiff[3]),
+        mDiffPresetHasFullIo ? "full" : "u-only",
+        double(mInjectionBDiff[0]),
+        double(mInjectionBDiff[1]),
+        double(mOutputCLDiff[0]),
+        double(mOutputCLDiff[1]));
+}
+
+void PluginTinyFdnReverb::updateActiveHouseholderU() noexcept
+{
+    const bool diffRequested = (fHouseholderMode != 0) && (mActiveDiffPreset != nullptr);
+    const bool useDiffIo = diffRequested && mDiffPresetHasFullIo;
+
+    mHouseholderUActive = diffRequested ? mHouseholderUDiff : mHouseholderUFixed;
+    mInjectionBActive = useDiffIo ? mInjectionBDiff : mInjectionBFixed;
+    mOutputCLActive = useDiffIo ? mOutputCLDiff : mOutputCLFixed;
+    mOutputCRActive = useDiffIo ? mOutputCRDiff : mOutputCRFixed;
+    mDiffRoutingMode = !diffRequested ? 0 : (useDiffIo ? 2 : 1);
+}
+
 inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN]) const noexcept {
     const float a=in[0], b=in[1], c=in[2], d=in[3];
     out[0] = 0.5f*(+a + b + c + d);
@@ -361,13 +609,22 @@ inline void PluginTinyFdnReverb::hadamardMix4(const float in[kN], float out[kN])
     out[3] = 0.5f*(+a - b - c + d);
 }
 
-inline void PluginTinyFdnReverb::householderMix4(const float in[kN], float out[kN]) const noexcept {
-    const float s = in[0]+in[1]+in[2]+in[3];
-    const float halfS = 0.5f * s;
-    out[0] = in[0] - halfS;
-    out[1] = in[1] - halfS;
-    out[2] = in[2] - halfS;
-    out[3] = in[3] - halfS;
+inline void PluginTinyFdnReverb::householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept
+{
+    // SOURCE: flamo HouseholderMatrix concept (Dal Santo et al.), commit:
+    // https://github.com/gdalsanto/flamo/blob/4c8097d4feda76132691bb2a3e465ebcba11dcea/flamo/processor/dsp.py#L621-L725
+    // Adapted for this plugin's fixed N=4 realtime path:
+    // y = x - 2*u*(u^T*x) without explicitly forming U = I - 2uu^T.
+    float dot = 0.f;
+    for (int i = 0; i < kN; ++i)
+        dot += in[i] * u[i];
+    for (int i = 0; i < kN; ++i)
+        out[i] = in[i] - 2.f * u[i] * dot;
+}
+
+inline void PluginTinyFdnReverb::householderMix4(const float in[kN], float out[kN]) const noexcept
+{
+    householderMix4U(in, mHouseholderUFixed.data(), out);
 }
 
 // Compute ringiness using short-lag autocorr on a window that
@@ -430,16 +687,28 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         fModSmooth    = CParamSmooth(10.0f, sr);
         fDetuneSmooth = CParamSmooth(10.0f, sr);
         selectBaseAndUpdateDelays(sr);
+        updateDiffPresetForContext(sr);
+        updateActiveHouseholderU();
         fLastSR = sr;
         DBG("[RUN] SR change -> %.0f", sr);
     }
 
+    const uint32_t uiMorphReqSeq = mUiMatrixMorphRequestSeq.load(std::memory_order_acquire);
+    if (uiMorphReqSeq != mAppliedUiMatrixMorphRequestSeq) {
+        fMatrixMorph = bitsToFloat(mUiMatrixMorphRequestBits.load(std::memory_order_relaxed));
+        fMatrixType = (fMatrixMorph < 0.5f) ? 0 : 1;
+        mAppliedUiMatrixMorphRequestSeq = uiMorphReqSeq;
+    }
+
     // Apply size change (integer lengths)
+    const int currentMatrixType = (fMatrixMorph < 0.5f) ? 0 : 1;
+    fMatrixType = currentMatrixType;
+
     if (std::fabs(fSize - fAppliedSize) > 1e-4f) {
         fAppliedSize = fSize;
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     // Metallic Boost toggled?
@@ -454,7 +723,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         }
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     // Delay set change?
@@ -464,17 +733,46 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         fAppliedDelaySet = fDelaySet;
         selectBaseAndUpdateDelays(sr);
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
+    }
+
+    // Diff-vs-fixed Householder mode change?
+    if (fHouseholderMode != fAppliedHouseholderMode) {
+        DBG("[RUN] HouseholderMode changed: %s -> %s",
+            fAppliedHouseholderMode ? "Diff" : "Fixed",
+            fHouseholderMode ? "Diff" : "Fixed");
+        fAppliedHouseholderMode = fHouseholderMode;
+    }
+
+    // Keep preset selection aligned to current SR / delay set / RT60.
+    updateDiffPresetForContext(sr);
+    updateActiveHouseholderU();
+    publishUiState();
+
+    if (mDiffRoutingMode != fAppliedDiffRoutingMode) {
+        const char* route =
+            (mDiffRoutingMode == 0) ? "Fixed baseline"
+            : ((mDiffRoutingMode == 1) ? "Diff u-only" : "Diff full (u+b+c)");
+#if !defined(TFDN_ENABLE_LOG)
+        (void)route;
+#endif
+        DBG("[RUN] Diff routing -> %s | b=[%.5f %.5f ...] cL=[%.5f %.5f ...]",
+            route,
+            double(mInjectionBActive[0]),
+            double(mInjectionBActive[1]),
+            double(mOutputCLActive[0]),
+            double(mOutputCLActive[1]));
+        fAppliedDiffRoutingMode = mDiffRoutingMode;
     }
 
     // Matrix change?
-    if (fMatrixType != fAppliedMatrixType) {
+    if (currentMatrixType != fAppliedMatrixType) {
         DBG("[RUN] MatrixType changed: %s -> %s",
             fAppliedMatrixType? "Householder":"Hadamard",
-            fMatrixType? "Householder":"Hadamard");
-        fAppliedMatrixType = fMatrixType;
+            currentMatrixType? "Householder":"Hadamard");
+        fAppliedMatrixType = currentMatrixType;
         resetStateForTopologyChange();
-        dump_state_lengths("RESET", fMatrixType, fDelaySet, mLen);
+        dump_state_lengths("RESET", currentMatrixType, fDelaySet, mLen);
     }
 
     updateLineGainsFromRt60(sr);
@@ -495,6 +793,9 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         DBG("[RUN] Noise burst start (%d samples) + IR capture", mNoiseBurstLeft);
     }
 
+    double wetEnergy = 0.0;
+    float lastMorphTarget = fMatrixMorphApplied;
+
     for (uint32_t i=0; i<frames; ++i) {
         const float mixL   = fMixSmoothL.process(fMix);
         const float mixR   = fMixSmoothR.process(fMix);
@@ -504,6 +805,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
 
         // Smooth morph parameter 0..1 (Hadamard → Householder)
         const float morphTarget = fMorphSmooth.process(fMatrixMorph);
+        lastMorphTarget = morphTarget;
 
         // Spread is our “worst-case” metallic set; we still allow modulation unless MetalBoost forces off.
         float modAmt = modDepth;
@@ -524,7 +826,7 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         // Feedback mix (Hada vs House)
         float yH[kN], yHo[kN], y[kN];
         hadamardMix4   (g, yH);
-        householderMix4(g, yHo);
+        householderMix4U(g, mHouseholderUActive.data(), yHo);
         for (int k=0; k<kN; ++k) y[k] = (1.0f - morphTarget)*yH[k] + morphTarget*yHo[k];
 
         // --- STATIC detune AP (small, alternating sign) ---
@@ -567,28 +869,38 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         }
 
         // --- injection (ping or noise burst or input mono) ---
-        float inj = 0.25f * (0.5f*(inL[i] + inR[i]));
+        const float monoIn = 0.5f * (inL[i] + inR[i]);
+        float excitationScalar = monoIn;
         if (mNoiseBurstLeft > 0) {
-            inj = nextNoise(); --mNoiseBurstLeft;
+            excitationScalar = nextNoise();
+            --mNoiseBurstLeft;
         } else if (pingAtBlock && i == 0) {
-            inj = 1.0f;
+            excitationScalar = 1.0f;
         }
 
         // write and advance
         for (int k=0; k<kN; ++k) {
+            // Always inject through active b-vector (fixed/u-only/full differ by selection only).
+            const float inj = mInjectionBActive[k] * excitationScalar;
             mBuf[k][ mIdx[k] ] = yDamped[k] + inj;
             int idx = mIdx[k] + 1; if (idx >= mLen[k]) idx = 0;
             mIdx[k] = idx;
         }
 
-        float wetL = 0.5f*(+yMod[0] - yMod[1] + yMod[2] - yMod[3]);
-        float wetR = 0.5f*(+yMod[0] + yMod[1] - yMod[2] - yMod[3]);
+        float wetL = 0.0f;
+        float wetR = 0.0f;
+        // Always mix through active c-vectors (fixed/u-only/full differ by selection only).
+        for (int k = 0; k < kN; ++k) {
+            wetL += mOutputCLActive[k] * yMod[k];
+            wetR += mOutputCRActive[k] * yMod[k];
+        }
 
         float wetGain = 1.0f;
         if (mMuteSamples > 0) { wetGain = 0.0f; --mMuteSamples; }
         wetL *= wetGain; wetR *= wetGain;
 
         const float wetMono = 0.5f * (wetL + wetR);
+        wetEnergy += double(wetMono) * double(wetMono);
 
         // IR capture (mono)
         if (irCapturing) {
@@ -614,6 +926,14 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
         if (std::fabs(outL[i]) < 1e-30f) outL[i] = 0.0f;
         if (std::fabs(outR[i]) < 1e-30f) outR[i] = 0.0f;
     } // per-sample
+
+    fMatrixMorphApplied = lastMorphTarget;
+    publishUiState();
+
+    mWetEnv = (frames > 0u) ? std::sqrt(float(wetEnergy / double(frames))) : 0.f;
+    const uint32_t writeIndex = mEnvTraceWrite.load(std::memory_order_relaxed);
+    mEnvTraceBits[writeIndex & (kEnvTraceSize - 1u)].store(floatToBits(mWetEnv), std::memory_order_relaxed);
+    mEnvTraceWrite.store(writeIndex + 1u, std::memory_order_release);
 
     // If an IR just finished, analyze it once and push metrics
     if (irReady && !irAnalyzed) {
@@ -697,20 +1017,37 @@ void PluginTinyFdnReverb::run(const float** inputs, float** outputs, uint32_t fr
     // summary line every ~50 ms
     mSamplesSincePush += frames;
     if (sr > 0.0 && mSamplesSincePush >= (uint32_t)(0.05 * sr)) {
-        setParameterValue(paramEDTms,        mEDTms);
-        setParameterValue(paramRT60est,      mRT60s);
-        setParameterValue(paramDensity100ms, mDen100);
-        setParameterValue(paramDensity300ms, mDen300);
-        setParameterValue(paramRinginess,    mRinginess);
+        // Publish meter snapshots for UI direct-access polling.
+        mEDTmsBits.store(floatToBits(mEDTms), std::memory_order_relaxed);
+        mRT60sBits.store(floatToBits(mRT60s), std::memory_order_relaxed);
+        mDen100Bits.store(floatToBits(mDen100), std::memory_order_relaxed);
+        mDen300Bits.store(floatToBits(mDen300), std::memory_order_relaxed);
+        mRinginessBits.store(floatToBits(mRinginess), std::memory_order_relaxed);
+        mWetEnvBits.store(floatToBits(mWetEnv), std::memory_order_relaxed);
+
+        DBG("[DSP] meter publish idx=[%u,%u,%u,%u,%u,%u]",
+            unsigned(paramEDTms),
+            unsigned(paramRT60est),
+            unsigned(paramDensity100ms),
+            unsigned(paramDensity300ms),
+            unsigned(paramRinginess),
+            unsigned(paramWetEnv));
 
         DBG("[RUNDBG] rt60=%.3f matrix=%s delay=%s metal=%d modDepth=%.2f ring=%.2f L=[%d %d %d %d]",
             double(fRt60),
-            fMatrixType ? "Householder" : "Hadamard",
+            (fMatrixMorph < 0.5f) ? "Hadamard" : (fHouseholderMode ? "DiffHouse" : "FixedHouse"),
             fDelaySet   ? "Spread"      : "Prime",
             fAppliedMetalBoost,
             double(fModDepth),
             double(mRinginess),
             mLen[0], mLen[1], mLen[2], mLen[3]);
+
+        DBG("[RUNDBG] diffRoute=%d b0=%.5f b1=%.5f cL0=%.5f cL1=%.5f",
+            mDiffRoutingMode,
+            double(mInjectionBActive[0]),
+            double(mInjectionBActive[1]),
+            double(mOutputCLActive[0]),
+            double(mOutputCLActive[1]));
 
         mSamplesSincePush = 0;
     }

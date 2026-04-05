@@ -134,14 +134,36 @@ ifeq ($(BUILD_LADSPA),true)
 	@mkdir -p -m755 $(USER_LADSPA_DIR) && \
 	  install -m755 $(TARGET_DIR)/$(NAME)-ladspa$(LIB_EXT) $(USER_LADSPA_DIR)
 endif
-ifeq ($(BUILD_VST2),true)
-	@mkdir -p -m755 $(USER_VST2_DIR) && \
-	  install -m755 $(TARGET_DIR)/$(NAME)-vst$(LIB_EXT) $(USER_VST2_DIR)
-endif
+ifeq ($(MACOS),true)
+	@set -e; \
+	  dst="$(HOME)/Library/Audio/Plug-Ins/VST3"; \
+	  mkdir -p -m755 "$$dst"; \
+	  set -- $(TARGET_DIR)/$(NAME)*.vst3; \
+	  if [ "$$1" = "$(TARGET_DIR)/$(NAME)*.vst3" ]; then \
+	    echo "Error: no VST3 bundle found for $(NAME) in $(TARGET_DIR)."; \
+	    echo "Hint: build with BUILD_VST3=true and run make again."; \
+	    exit 1; \
+	  fi; \
+	  installed=0; \
+	  for bundle in "$$@"; do \
+	    if [ -d "$$bundle" ]; then \
+	      cp -R "$$bundle" "$$dst/"; \
+	      echo "Installed VST3 bundle: $$bundle -> $$dst/"; \
+	      installed=1; \
+	    fi; \
+	  done; \
+	  if [ "$$installed" -eq 0 ]; then \
+	    echo "Error: matched paths were not VST3 bundle directories."; \
+	    exit 1; \
+	  fi; \
+	  echo "VST3 install-user complete: $$dst"
+else
 ifeq ($(BUILD_VST3),true)
 	@mkdir -p -m755 $(USER_VST3_DIR) && \
 	  cp -r $(TARGET_DIR)/$(NAME).vst3 $(USER_VST3_DIR)
 endif
+endif
+ifneq ($(MACOS),true)
 ifeq ($(BUILD_CLAP),true)
 	@mkdir -p -m755 $(USER_CLAP_DIR) && \
 	  install -m755 $(TARGET_DIR)/$(NAME).clap $(USER_CLAP_DIR)
@@ -155,6 +177,7 @@ ifeq ($(BUILD_JACK),true)
 ifeq ($(HAVE_JACK),true)
 	@mkdir -p -m755 $(HOME)/bin && \
 	  install -m755 $(TARGET_DIR)/$(NAME)$(APP_EXT) $(HOME)/bin
+endif
 endif
 endif
 

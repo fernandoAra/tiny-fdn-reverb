@@ -1,0 +1,1104 @@
+"""Minimal frequency-sampled differentiable tiny-FDN model (N=4).
+
+SOURCE:
+- diff-fdn-colorless reference implementation (Dal Santo et al.), pinned commit:
+  https://github.com/gdalsanto/diff-fdn-colorless/tree/49a9737fb320de6cea7dc85e990eaef8c8cfba0c
+- Adapted ideas here: frequency-domain transfer evaluation, sparse-bin training,
+  and Eq.(18)-style matrix sparsity regularization for tiny-FDN optimization.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import numpy as np
+import torch
+
+from .householder import householder_matrix, unit_vector_from_raw
+
+
+def _complex_dtype(real_dtype: torch.dtype) -> torch.dtype:
+    if real_dtype == torch.float32:
+        return torch.complex64
+    if real_dtype == torch.float64:
+        return torch.complex128
+    raise ValueError(f"Unsupported real dtype: {real_dtype}")
+
+
+def hz_from_k(
+    *,
+    sr: float,
+    freq_grid_size: int,
+    k: torch.Tensor | int,
+    dtype: torch.dtype = torch.float64,
+) -> torch.Tensor:
+    """Map frequency-grid index k to Hz using the project-wide sampling formula."""
+    grid_n = max(int(freq_grid_size), 2)
+    k_t = torch.as_tensor(k, dtype=dtype)
+    return k_t * (float(sr) / (2.0 * float(grid_n)))
+
+
+def k_to_hz(
+    *,
+    sr: float,
+    freq_grid_size: int,
+    k: torch.Tensor | int,
+    dtype: torch.dtype = torch.float64,
+) -> torch.Tensor:
+    """Backward-compatible wrapper for hz_from_k()."""
+    return hz_from_k(sr=sr, freq_grid_size=freq_grid_size, k=k, dtype=dtype)
+
+
+def hz_to_k(
+    *,
+    sr: float,
+    freq_grid_size: int,
+    hz: float,
+) -> int:
+    """Map Hz to nearest k-index, clamped to the valid [0, freq_grid_size-1] range."""
+    grid_n = max(int(freq_grid_size), 2)
+    hz_clamped = min(max(float(hz), 0.0), 0.5 * float(sr))
+    k = int(round(hz_clamped * (2.0 * float(grid_n)) / float(sr)))
+    return int(min(max(k, 0), grid_n - 1))
+
+
+def build_band_k_pool(
+    *,
+    sr: float,
+    freq_grid_size: int,
+    fmin_hz: float,
+    fmax_hz: float,
+    exclude_dc: bool = True,
+    device_cpu: bool = True,
+    device: Optional[torch.device] = None,
+) -> Tuple[torch.Tensor, int, int, int]:
+    """Build an increasing k-index pool for the requested paper band."""
+    grid_n = max(int(freq_grid_size), 2)
+    band_max = min(max(float(fmax_hz), 0.0), 0.49 * float(sr))
+    band_min = max(0.0, min(float(fmin_hz), band_max))
+    target_device = torch.device("cpu") if device_cpu or device is None else torch.device(device)
+    k_min = hz_to_k(sr=sr, freq_grid_size=grid_n, hz=band_min)
+    k_max = hz_to_k(sr=sr, freq_grid_size=grid_n, hz=band_max)
+    if k_max < k_min:
+        empty = torch.empty((0,), dtype=torch.int64, device=target_device)
+        return empty, 0, -1, 0
+    pool = torch.arange(k_min, k_max + 1, dtype=torch.int64, device=target_device)
+    if exclude_dc:
+        pool = pool[pool != 0]
+    if pool.numel() == 0:
+        return pool, 0, -1, 0
+    return pool, int(pool[0].item()), int(pool[-1].item()), int(pool.numel())
+
+
+def split_k_pool(
+    pool: torch.Tensor, val_fraction: float, np_rng: np.random.Generator
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Split a CPU k-index pool into deterministic train/validation subsets."""
+    pool_cpu = torch.as_tensor(pool, dtype=torch.int64, device=torch.device("cpu"))
+    pool_np = pool_cpu.detach().cpu().numpy().astype(np.int64)
+    if pool_np.size <= 1:
+        return pool_cpu, pool_cpu
+
+    shuffled = np_rng.permutation(pool_np)
+    train_count = max(1, int(round((1.0 - float(val_fraction)) * float(shuffled.size))))
+    train_count = min(train_count, shuffled.size - 1)
+    train_np = shuffled[:train_count]
+    val_np = shuffled[train_count:]
+    if val_np.size == 0:
+        val_np = train_np
+    return (
+        torch.as_tensor(train_np, dtype=torch.int64, device=torch.device("cpu")),
+        torch.as_tensor(val_np, dtype=torch.int64, device=torch.device("cpu")),
+    )
+
+
+def sample_k_from_pool(
+    pool: torch.Tensor,
+    batch_size: int,
+    *,
+    np_rng: np.random.Generator,
+    device: torch.device,
+    warn_on_replacement: bool = True,
+) -> torch.Tensor:
+    """Uniformly sample k-indices from a prebuilt pool, preserving determinism via np_rng."""
+    pool_cpu = torch.as_tensor(pool, dtype=torch.int64, device=torch.device("cpu"))
+    pool_np = pool_cpu.detach().cpu().numpy().astype(np.int64)
+    if pool_np.size == 0:
+        raise RuntimeError("Cannot sample k-indices from an empty pool")
+
+    draw_n = max(int(batch_size), 1)
+    replace = draw_n > pool_np.size
+    if replace and warn_on_replacement:
+        print(
+            "[WARN] sampled_k uses replacement because batch_size={} > pool_count={}".format(
+                draw_n, int(pool_np.size)
+            )
+        )
+    sampled = np_rng.choice(pool_np, size=draw_n, replace=replace)
+    return torch.as_tensor(sampled, dtype=torch.int64, device=device)
+
+
+def hadamard4_matrix(
+    *, device: Optional[torch.device] = None, dtype: torch.dtype = torch.float64
+) -> torch.Tensor:
+    return 0.5 * torch.tensor(
+        [
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, -1.0, 1.0, -1.0],
+            [1.0, 1.0, -1.0, -1.0],
+            [1.0, -1.0, -1.0, 1.0],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+
+
+def gains_from_rt60(
+    delay_samples: Iterable[int], rt60: float, sr: float, *, dtype: torch.dtype = torch.float64
+) -> torch.Tensor:
+    gamma = gamma_from_rt60(sr, rt60)
+    return gains_from_gamma(delay_samples, gamma, dtype=dtype)
+
+
+def gamma_from_rt60(fs: float, rt60: float) -> float:
+    fs_safe = max(float(fs), 1.0)
+    rt60_safe = max(float(rt60), 1e-3)
+    gamma = 10.0 ** (-3.0 / (fs_safe * rt60_safe))
+    return min(max(gamma, 1e-6), 0.999999)
+
+
+def rt60_from_gamma(fs: float, gamma: float) -> float:
+    fs_safe = max(float(fs), 1.0)
+    gamma_safe = min(max(float(gamma), 1e-6), 0.999999)
+    return float(math.log(1e-3) / (fs_safe * math.log(gamma_safe)))
+
+
+def gains_from_gamma(
+    delay_samples: Iterable[int], gamma: float, *, dtype: torch.dtype = torch.float64
+) -> torch.Tensor:
+    delay = torch.as_tensor(list(delay_samples), dtype=dtype)
+    gamma_clamped = min(max(float(gamma), 1e-6), 0.999999)
+    return torch.pow(torch.full_like(delay, gamma_clamped), delay)
+
+
+def default_io_vectors(
+    n: int,
+    *,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float64,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    b = torch.full((n,), 1.0 / float(n), dtype=dtype, device=device)
+    if n == 4:
+        c_l = torch.tensor([0.5, -0.5, 0.5, -0.5], dtype=dtype, device=device)
+        c_r = torch.tensor([0.5, 0.5, -0.5, -0.5], dtype=dtype, device=device)
+    else:
+        c_l = torch.full((n,), 1.0 / float(n), dtype=dtype, device=device)
+        c_r = torch.full((n,), 1.0 / float(n), dtype=dtype, device=device)
+    return b, c_l, c_r
+
+
+def normalize_l2(vec: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Return vec normalized to unit L2 norm."""
+    norm = torch.linalg.vector_norm(vec)
+    return vec / torch.clamp(norm, min=eps)
+
+
+def matrix_from_type(
+    matrix_type: str,
+    *,
+    u: Optional[torch.Tensor],
+    device: Optional[torch.device],
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    matrix_kind = matrix_type.lower()
+    if matrix_kind == "householder":
+        if u is None:
+            raise ValueError("Householder matrix_type requires unit vector u")
+        return householder_matrix(u)
+    if matrix_kind == "hadamard":
+        return hadamard4_matrix(device=device, dtype=dtype)
+    raise ValueError(f"Unsupported matrix_type: {matrix_type}")
+
+
+def _prepare_k_indices(
+    nfft: int,
+    *,
+    k_indices: Optional[torch.Tensor],
+    max_k: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    if k_indices is None:
+        return torch.arange(max_k + 1, dtype=dtype, device=device)
+
+    if k_indices.ndim != 1:
+        raise ValueError(f"k_indices must be rank-1, got shape {tuple(k_indices.shape)}")
+
+    if not torch.is_floating_point(k_indices):
+        k = k_indices.to(dtype=torch.int64, device=device)
+    else:
+        k = k_indices.to(device=device)
+        if not torch.allclose(k, torch.round(k)):
+            raise ValueError("k_indices must contain integer-valued bins")
+        k = torch.round(k).to(dtype=torch.int64)
+
+    if torch.any(k < 0) or torch.any(k > max_k):
+        raise ValueError(f"k_indices must be in [0, {max_k}]")
+
+    return k.to(dtype=dtype)
+
+
+def transfer_function(
+    *,
+    sr: float,
+    nfft: int,
+    delay_samples: Iterable[int],
+    gains: torch.Tensor,
+    U: torch.Tensor,
+    b: torch.Tensor,
+    c: torch.Tensor,
+    k_indices: Optional[torch.Tensor] = None,
+    freq_grid_size: Optional[int] = None,
+    eps: float = 1e-9,
+) -> torch.Tensor:
+    """Compute H(w)=c^T(I-D(w)U G)^-1 D(w)b at selected DFT bins."""
+    if nfft <= 0:
+        raise ValueError("nfft must be positive")
+
+    n = U.shape[0]
+    if U.shape != (n, n):
+        raise ValueError(f"Expected square U, got {tuple(U.shape)}")
+
+    delay = torch.as_tensor(list(delay_samples), dtype=gains.dtype, device=U.device)
+    if delay.numel() != n:
+        raise ValueError(f"delay length {delay.numel()} must match matrix size {n}")
+    if gains.numel() != n or b.numel() != n or c.numel() != n:
+        raise ValueError("gains, b, c must have shape (N,)")
+
+    c_dtype = _complex_dtype(U.dtype)
+    if freq_grid_size is None:
+        max_k = nfft // 2
+    else:
+        max_k = max(int(freq_grid_size) - 1, 1)
+    k = _prepare_k_indices(nfft, k_indices=k_indices, max_k=max_k, device=U.device, dtype=U.dtype)
+    if freq_grid_size is None:
+        omega = (2.0 * math.pi / float(nfft)) * k
+    else:
+        # Paper-like dense frequency grid over [0, pi].
+        omega = math.pi * k / float(max(int(freq_grid_size), 2))
+    d = torch.exp(-1j * omega[:, None].to(c_dtype) * delay[None, :].to(c_dtype))
+
+    # F(w) = D(w) * U * G.
+    UG = U.to(c_dtype) @ torch.diag(gains.to(c_dtype))
+    F = d[:, :, None] * UG[None, :, :]
+
+    eye = torch.eye(n, dtype=c_dtype, device=U.device)[None, :, :]
+    A = eye - F
+    if eps > 0.0:
+        A = A + eps * eye
+
+    # rhs(w) = D(w) * b.
+    rhs = (d * b.to(c_dtype)[None, :])[:, :, None]
+    x = torch.linalg.solve(A, rhs).squeeze(-1)
+    H = torch.sum(c.to(c_dtype)[None, :] * x, dim=-1)
+    return H
+
+
+def spectral_loss_unity(
+    H: torch.Tensor, *, exclude_dc: bool = True
+) -> torch.Tensor:
+    """Paper-style unity-target spectral loss: mean((|H|-1)^2), optionally excluding DC."""
+    mag = torch.abs(H)
+    if exclude_dc and mag.numel() > 1:
+        mag = mag[1:]
+    return torch.mean((mag - 1.0) ** 2)
+
+
+def spectral_loss_mean_normalized(
+    H: torch.Tensor, *, exclude_dc: bool = True, eps: float = 1e-12
+) -> torch.Tensor:
+    """Optional legacy variant: mean-normalized magnitude should stay near 1."""
+    mag = torch.abs(H)
+    if exclude_dc and mag.numel() > 1:
+        mag = mag[1:]
+    mag_mean = torch.mean(mag)
+    rel = mag / torch.clamp(mag_mean, min=eps)
+    return torch.mean((rel - 1.0) ** 2)
+
+
+def spectral_dev_db_from_transfer(
+    H_l: torch.Tensor, H_r: torch.Tensor, eps: float = 1e-12, *, exclude_dc: bool = True
+) -> torch.Tensor:
+    def _dev(h: torch.Tensor) -> torch.Tensor:
+        mag = torch.abs(h)
+        if exclude_dc and mag.numel() > 1:
+            mag = mag[1:]
+        rel = mag / torch.clamp(torch.mean(mag), min=eps)
+        db = 20.0 * torch.log10(torch.clamp(rel, min=eps))
+        return torch.std(db)
+
+    return 0.5 * (_dev(H_l) + _dev(H_r))
+
+
+def sparsity_loss_eq18(U: torch.Tensor) -> torch.Tensor:
+    """EURASIP Eq. (18)-style sparsity term, normalized to [0,1] for orthogonal U."""
+    n = U.shape[0]
+    sqrt_n = math.sqrt(float(n))
+    numerator = torch.sum(torch.abs(U)) - (float(n) * sqrt_n)
+    denominator = float(n) * (1.0 - sqrt_n)
+    return numerator / denominator
+
+
+def compute_losses(
+    *,
+    H_l: torch.Tensor,
+    H_r: torch.Tensor,
+    U: torch.Tensor,
+    alpha_density: float = 0.0,
+    spectral_mode: str = "unity",
+    exclude_dc: bool = True,
+) -> Dict[str, torch.Tensor]:
+    mode = spectral_mode.lower()
+    if mode == "unity":
+        spectral_l = spectral_loss_unity(H_l, exclude_dc=exclude_dc)
+        spectral_r = spectral_loss_unity(H_r, exclude_dc=exclude_dc)
+    elif mode == "mean":
+        spectral_l = spectral_loss_mean_normalized(H_l, exclude_dc=exclude_dc)
+        spectral_r = spectral_loss_mean_normalized(H_r, exclude_dc=exclude_dc)
+    else:
+        raise ValueError(f"Unsupported spectral_mode: {spectral_mode}")
+    spectral = 0.5 * (spectral_l + spectral_r)
+    sparseness_penalty = sparsity_loss_eq18(U)
+    total = spectral + float(alpha_density) * sparseness_penalty
+    return {
+        "total": total,
+        "spectral": spectral,
+        "sparsity": sparseness_penalty,
+    }
+
+
+@dataclass
+class OptimizeResult:
+    matrix_type: str
+    gamma_used: float
+    gamma_train: float
+    stability_gamma: float
+    training_mode: str
+    u: torch.Tensor
+    U: torch.Tensor
+    b: torch.Tensor
+    c_l: torch.Tensor
+    c_r: torch.Tensor
+    gains: torch.Tensor
+    losses: Dict[str, float]
+    history: Dict[str, List[float]]
+
+
+def _sample_k_indices(
+    *,
+    sr: float,
+    freq_grid_size: int,
+    batch_size: int,
+    np_rng: np.random.Generator,
+    device: torch.device,
+    paper_band_enable: bool,
+    paper_band_min_hz: float,
+    paper_band_max_hz: float,
+    exclude_dc: bool = True,
+    prebuilt_pool: Optional[torch.Tensor] = None,
+    warn_on_replacement: bool = True,
+) -> torch.Tensor:
+    if prebuilt_pool is None:
+        if paper_band_enable:
+            pool, _, _, _ = build_band_k_pool(
+                sr=sr,
+                freq_grid_size=freq_grid_size,
+                fmin_hz=paper_band_min_hz,
+                fmax_hz=paper_band_max_hz,
+                exclude_dc=exclude_dc,
+                device=torch.device("cpu"),
+            )
+        else:
+            start_k = 1 if exclude_dc else 0
+            pool = torch.arange(start_k, max(int(freq_grid_size), 2), dtype=torch.int64, device=torch.device("cpu"))
+    else:
+        pool = prebuilt_pool.to(device=torch.device("cpu"), dtype=torch.int64)
+    return sample_k_from_pool(
+        pool,
+        batch_size,
+        np_rng=np_rng,
+        device=device,
+        warn_on_replacement=warn_on_replacement,
+    )
+
+
+def evaluate_transfer_losses(
+    *,
+    sr: float,
+    nfft: int,
+    delay_samples: Iterable[int],
+    gains: torch.Tensor,
+    matrix_type: str,
+    u: Optional[torch.Tensor],
+    b: torch.Tensor,
+    c_l: torch.Tensor,
+    c_r: torch.Tensor,
+    alpha_density: float = 0.0,
+    spectral_mode: str = "unity",
+    k_indices: Optional[torch.Tensor] = None,
+    freq_grid_size: Optional[int] = None,
+    paper_band_enable: bool = False,
+    paper_band_min_hz: float = 50.0,
+    paper_band_max_hz: float = 12000.0,
+) -> Dict[str, torch.Tensor]:
+    matrix_kind = matrix_type.lower()
+    if matrix_kind == "householder":
+        if u is None:
+            raise ValueError("Householder evaluation requires u")
+        u_unit = normalize_l2(u)
+    elif matrix_kind == "hadamard":
+        u_unit = None
+    else:
+        raise ValueError("matrix_type must be 'householder' or 'hadamard'")
+
+    U = matrix_from_type(matrix_kind, u=u_unit, device=gains.device, dtype=gains.dtype)
+    H_l = transfer_function(
+        sr=sr,
+        nfft=nfft,
+        delay_samples=delay_samples,
+        gains=gains,
+        U=U,
+        b=b,
+        c=c_l,
+        k_indices=k_indices,
+        freq_grid_size=freq_grid_size,
+    )
+    H_r = transfer_function(
+        sr=sr,
+        nfft=nfft,
+        delay_samples=delay_samples,
+        gains=gains,
+        U=U,
+        b=b,
+        c=c_r,
+        k_indices=k_indices,
+        freq_grid_size=freq_grid_size,
+    )
+    exclude_dc = True
+    if k_indices is not None:
+        k_int = torch.as_tensor(k_indices, dtype=torch.int64, device=U.device)
+        exclude_dc = bool(torch.any(k_int == 0).item())
+        if paper_band_enable and freq_grid_size is not None:
+            bin_hz = float(sr) / (2.0 * float(max(int(freq_grid_size), 2)))
+            f_min = max(0.0, min(float(paper_band_min_hz), 0.49 * float(sr)))
+            f_max = min(max(float(paper_band_max_hz), 0.0), 0.49 * float(sr))
+            f_max = max(f_max, f_min)
+            k_hz = k_to_hz(
+                sr=sr,
+                freq_grid_size=int(freq_grid_size),
+                k=k_int.to(torch.float64),
+                dtype=torch.float64,
+            )
+            if bool(torch.any(k_hz < (f_min - bin_hz)).item()) or bool(
+                torch.any(k_hz > (f_max + bin_hz)).item()
+            ):
+                raise ValueError(
+                    "k_indices include values outside configured paper band "
+                    f"[{f_min:.3f}, {f_max:.3f}] Hz"
+                )
+            if bool(torch.any(k_int == 0).item()):
+                raise ValueError("paper-band evaluation received DC bin (k=0), which should be excluded")
+
+    losses = compute_losses(
+        H_l=H_l,
+        H_r=H_r,
+        U=U,
+        alpha_density=alpha_density,
+        spectral_mode=spectral_mode,
+        exclude_dc=exclude_dc,
+    )
+    return {
+        "total": losses["total"],
+        "spectral": losses["spectral"],
+        "sparsity": losses["sparsity"],
+        "U": U,
+        "u": u_unit if u_unit is not None else torch.zeros_like(b),
+        "H_l": H_l,
+        "H_r": H_r,
+    }
+
+
+def _evaluate_k_pool_chunked(
+    *,
+    sr: float,
+    nfft: int,
+    delay_samples: Iterable[int],
+    gains: torch.Tensor,
+    matrix_type: str,
+    u: Optional[torch.Tensor],
+    b: torch.Tensor,
+    c_l: torch.Tensor,
+    c_r: torch.Tensor,
+    alpha_density: float,
+    spectral_mode: str,
+    k_pool: torch.Tensor,
+    freq_grid_size: int,
+    paper_band_enable: bool,
+    paper_band_min_hz: float,
+    paper_band_max_hz: float,
+    chunk_size: int,
+) -> Dict[str, torch.Tensor]:
+    """Evaluate spectral metrics over a full k-pool by iterating in fixed-size chunks."""
+    pool_cpu = torch.as_tensor(k_pool, dtype=torch.int64, device=torch.device("cpu"))
+    if pool_cpu.numel() == 0:
+        raise RuntimeError("Cannot evaluate an empty k-pool")
+
+    spectral_weighted = 0.0
+    total_bins = 0
+    sparsity_ref: Optional[torch.Tensor] = None
+    U_ref: Optional[torch.Tensor] = None
+    H_l_chunks: List[torch.Tensor] = []
+    H_r_chunks: List[torch.Tensor] = []
+    chunk_n = max(int(chunk_size), 1)
+
+    for start in range(0, int(pool_cpu.numel()), chunk_n):
+        chunk = pool_cpu[start : start + chunk_n].to(device=gains.device)
+        eval_chunk = evaluate_transfer_losses(
+            sr=sr,
+            nfft=nfft,
+            delay_samples=delay_samples,
+            gains=gains,
+            matrix_type=matrix_type,
+            u=u,
+            b=b,
+            c_l=c_l,
+            c_r=c_r,
+            alpha_density=alpha_density,
+            spectral_mode=spectral_mode,
+            k_indices=chunk,
+            freq_grid_size=freq_grid_size,
+            paper_band_enable=paper_band_enable,
+            paper_band_min_hz=paper_band_min_hz,
+            paper_band_max_hz=paper_band_max_hz,
+        )
+        chunk_len = int(chunk.numel())
+        spectral_weighted += float(eval_chunk["spectral"].detach().cpu()) * float(chunk_len)
+        total_bins += chunk_len
+        if sparsity_ref is None:
+            sparsity_ref = eval_chunk["sparsity"].detach().cpu()
+            U_ref = eval_chunk["U"].detach().cpu()
+        H_l_chunks.append(eval_chunk["H_l"].detach().cpu())
+        H_r_chunks.append(eval_chunk["H_r"].detach().cpu())
+
+    H_l_full = torch.cat(H_l_chunks, dim=0)
+    H_r_full = torch.cat(H_r_chunks, dim=0)
+    spectral_full = torch.tensor(
+        spectral_weighted / float(max(total_bins, 1)),
+        dtype=gains.dtype,
+    )
+    dev_full = spectral_dev_db_from_transfer(H_l_full, H_r_full, exclude_dc=False).detach().cpu()
+    assert sparsity_ref is not None
+    assert U_ref is not None
+    total_full = spectral_full + float(alpha_density) * sparsity_ref.to(dtype=gains.dtype)
+    return {
+        "total": total_full,
+        "spectral": spectral_full,
+        "sparsity": sparsity_ref.to(dtype=gains.dtype),
+        "U": U_ref.to(dtype=gains.dtype),
+        "H_l": H_l_full.to(dtype=_complex_dtype(gains.dtype)),
+        "H_r": H_r_full.to(dtype=_complex_dtype(gains.dtype)),
+        "dev_db": dev_full.to(dtype=gains.dtype),
+    }
+
+
+def optimize_householder(
+    *,
+    sr: float = 48000.0,
+    nfft: int = 2048,
+    delay_samples: Iterable[int] = (1499, 2377, 3217, 4421),
+    rt60: float = 2.8,
+    matrix_type: str = "householder",
+    steps: Optional[int] = None,
+    epochs: int = 3,
+    M: int = 480000,
+    batch_size: int = 2000,
+    lr: float = 1e-3,
+    gamma: Optional[float] = None,
+    stability_gamma: float = 0.9999,
+    train_lossless: bool = True,
+    alpha_density: float = 0.0,
+    learn_io: bool = False,
+    freq_bins_per_step: int = 2000,
+    paper_band_enable: bool = True,
+    paper_band_min_hz: float = 50.0,
+    paper_band_max_hz: float = 12000.0,
+    paper_band_debug: bool = False,
+    paper_band_selfcheck: bool = False,
+    val_fraction: float = 0.2,
+    spectral_mode: str = "unity",
+    seed: int = 0,
+    dtype: torch.dtype = torch.float64,
+    device: Optional[torch.device] = None,
+    log_every: int = 100,
+) -> OptimizeResult:
+    seed_i = int(seed)
+    random.seed(seed_i)
+    np.random.seed(seed_i)
+    torch.manual_seed(seed_i)
+
+    device = torch.device("cpu") if device is None else torch.device(device)
+
+    delay = torch.as_tensor(list(delay_samples), dtype=dtype, device=device)
+    n = int(delay.numel())
+    if n != 4:
+        raise ValueError(f"This tiny model expects N=4, got N={n}")
+
+    gamma_used = gamma_from_rt60(sr, rt60) if gamma is None else float(gamma)
+    stability_gamma_clamped = min(max(float(stability_gamma), 1e-6), 0.999999)
+    if train_lossless:
+        # Paper-style "colorless core" training, stabilized slightly inside the unit circle.
+        gains = gains_from_gamma(delay.tolist(), stability_gamma_clamped, dtype=dtype).to(device)
+        gamma_train = stability_gamma_clamped
+        training_mode = "lossless-core-stabilized"
+    else:
+        gains = gains_from_gamma(delay.tolist(), gamma_used, dtype=dtype).to(device)
+        gamma_train = gamma_used
+        training_mode = "with-decay"
+    matrix_kind = matrix_type.lower()
+    if matrix_kind not in {"householder", "hadamard"}:
+        raise ValueError("matrix_type must be 'householder' or 'hadamard'")
+
+    b_default, c_l_default, c_r_default = default_io_vectors(n, device=device, dtype=dtype)
+    b_param = b_default.detach().clone().requires_grad_(learn_io)
+    c_l_param = c_l_default.detach().clone().requires_grad_(learn_io)
+    c_r_param = c_r_default.detach().clone().requires_grad_(learn_io)
+
+    if matrix_kind == "householder":
+        v = torch.randn(n, dtype=dtype, device=device, requires_grad=True)
+        params = [v]
+    else:
+        v = torch.full((n,), 0.5, dtype=dtype, device=device)
+        params = []
+
+    if learn_io:
+        params += [b_param, c_l_param, c_r_param]
+
+    optimizer = torch.optim.Adam(params, lr=lr) if params else None
+
+    history: Dict[str, List[float]] = {
+        "step": [],
+        "epoch": [],
+        "total": [],
+        "spectral": [],
+        "sparsity": [],
+        "u_norm": [],
+        "b_norm": [],
+        "cL_norm": [],
+        "cR_norm": [],
+        "epoch_idx": [],
+        "epoch_steps": [],
+        "epoch_train_total": [],
+        "epoch_train_spectral": [],
+        "epoch_train_sparsity": [],
+        "val_subset_spectral_loss_like_50_12k": [],
+        "val_subset_dev_db_50_12k": [],
+        "val_spectral_loss_like_50_12k": [],
+        "val_spectral_dev_db_50_12k": [],
+        "best_val_spectral_dev_db_50_12k": [],
+    }
+
+    freq_grid_size = max(int(M), 2)
+    band_max = min(max(float(paper_band_max_hz), 0.0), 0.49 * float(sr))
+    band_min = max(0.0, min(float(paper_band_min_hz), band_max))
+    if bool(paper_band_enable):
+        band_k_pool_tensor, band_k_min, band_k_max, band_k_pool_count = build_band_k_pool(
+            sr=sr,
+            freq_grid_size=freq_grid_size,
+            fmin_hz=band_min,
+            fmax_hz=band_max,
+            exclude_dc=True,
+            device_cpu=True,
+        )
+    else:
+        band_k_pool_tensor = torch.arange(1, freq_grid_size, dtype=torch.int64, device=torch.device("cpu"))
+        band_k_pool_count = int(band_k_pool_tensor.numel())
+        band_k_min = int(band_k_pool_tensor[0].item()) if band_k_pool_count > 0 else 0
+        band_k_max = int(band_k_pool_tensor[-1].item()) if band_k_pool_count > 0 else -1
+    band_k_pool = band_k_pool_tensor.detach().cpu().numpy().astype(np.int64)
+    if band_k_pool.size == 0:
+        raise RuntimeError(
+            "paper-band k-pool is empty. Adjust --paper-band-min-hz/--paper-band-max-hz "
+            "or increase M/freq_grid_size."
+        )
+
+    if paper_band_debug or paper_band_selfcheck:
+        dbg_rng = np.random.default_rng(seed_i)
+        sample_n = min(10, band_k_pool_count)
+        dbg_sample = np.sort(dbg_rng.choice(band_k_pool, size=sample_n, replace=False))
+        dbg_sample_hz = k_to_hz(
+            sr=sr,
+            freq_grid_size=freq_grid_size,
+            k=torch.as_tensor(dbg_sample, dtype=torch.int64),
+            dtype=dtype,
+        ).detach().cpu()
+        dbg_minibatch = sample_k_from_pool(
+            band_k_pool_tensor,
+            max(int(freq_bins_per_step) if int(freq_bins_per_step) > 0 else int(batch_size), 1),
+            np_rng=dbg_rng,
+            device=torch.device("cpu"),
+            warn_on_replacement=True,
+        )
+        dbg_minibatch_hz = k_to_hz(
+            sr=sr,
+            freq_grid_size=freq_grid_size,
+            k=dbg_minibatch.to(dtype),
+            dtype=dtype,
+        ).detach().cpu()
+        print("[paper-band debug]")
+        print(f"  sr={int(sr)} freq_grid_size={int(freq_grid_size)}")
+        print(f"  paper_band_min_hz={band_min:.3f} paper_band_max_hz={band_max:.3f}")
+        print(
+            f"  derived_k_min={band_k_min} derived_k_max={band_k_max} "
+            f"pool_k_min={band_k_min} pool_k_max={band_k_max} pool_count={band_k_pool_count}"
+        )
+        print("  sample k->hz:")
+        for k_i, hz_i in zip(dbg_sample.tolist(), dbg_sample_hz.tolist()):
+            print(f"    k={int(k_i):6d} -> {float(hz_i):10.6f} Hz")
+        print(
+            "  sampled minibatch hz stats: min={:.6f} max={:.6f} mean={:.6f}".format(
+                float(torch.min(dbg_minibatch_hz).item()),
+                float(torch.max(dbg_minibatch_hz).item()),
+                float(torch.mean(dbg_minibatch_hz).item()),
+            )
+        )
+    if paper_band_selfcheck:
+        return OptimizeResult(
+            matrix_type=matrix_kind,
+            gamma_used=float(gamma_used),
+            gamma_train=float(gamma_train),
+            stability_gamma=float(stability_gamma_clamped),
+            training_mode=training_mode,
+            u=normalize_l2(torch.full((n,), 0.5, dtype=dtype, device=device)).detach().cpu(),
+            U=matrix_from_type(matrix_kind, u=normalize_l2(torch.full((n,), 0.5, dtype=dtype, device=device)), device=device, dtype=dtype).detach().cpu(),
+            b=b_default.detach().cpu(),
+            c_l=c_l_default.detach().cpu(),
+            c_r=c_r_default.detach().cpu(),
+            gains=gains.detach().cpu(),
+            losses={
+                "total": 0.0,
+                "spectral": 0.0,
+                "sparsity": 0.0,
+                "best_val_step": -1.0,
+                "best_val_spectral_loss_like_50_12k": 0.0,
+                "best_val_spectral_dev_db_50_12k": 0.0,
+                "final_spectral_dev_db_50_12k": 0.0,
+                "training_band_k_count": float(band_k_pool_count),
+                "band_k_min": float(band_k_min),
+                "band_k_max": float(band_k_max),
+                "train_band_k_count": 0.0,
+                "val_band_k_count": 0.0,
+                "freq_grid_size": float(freq_grid_size),
+                "paper_band_enable": float(1.0 if paper_band_enable else 0.0),
+                "paper_band_min_hz": float(band_min),
+                "paper_band_max_hz": float(band_max),
+                "gamma_train": float(gamma_train),
+                "stability_gamma": float(stability_gamma_clamped),
+                "val_fraction": float(val_fraction),
+            },
+            history=history,
+        )
+
+    np_rng = np.random.default_rng(seed_i)
+    train_pool_tensor, val_pool_tensor = split_k_pool(band_k_pool_tensor, float(val_fraction), np_rng)
+    train_pool = train_pool_tensor.detach().cpu().numpy().astype(np.int64)
+    val_pool = val_pool_tensor.detach().cpu().numpy().astype(np.int64)
+
+    batch_n = max(int(freq_bins_per_step) if int(freq_bins_per_step) > 0 else int(batch_size), 1)
+    steps_per_epoch = max(1, int(math.ceil(float(train_pool.size) / float(batch_n))))
+    if steps is not None:
+        total_steps = max(int(steps), 1)
+        epochs_total = max(1, int(math.ceil(float(total_steps) / float(steps_per_epoch))))
+    else:
+        epochs_total = max(int(epochs), 1)
+        total_steps = epochs_total * steps_per_epoch
+
+    best_val_dev = float("inf")
+    best_val_spectral = float("inf")
+    best_step = -1
+    best_u: Optional[torch.Tensor] = None
+    best_b: Optional[torch.Tensor] = None
+    best_c_l: Optional[torch.Tensor] = None
+    best_c_r: Optional[torch.Tensor] = None
+    best_U: Optional[torch.Tensor] = None
+
+    train_pool_tensor = torch.as_tensor(train_pool, dtype=torch.int64, device=torch.device("cpu"))
+    val_pool_eval_tensor = torch.as_tensor(val_pool, dtype=torch.int64, device=torch.device("cpu"))
+    full_pool_tensor = band_k_pool_tensor.to(dtype=torch.int64, device=torch.device("cpu"))
+    global_step = 0
+    for epoch_idx in range(epochs_total):
+        epoch_total_vals: List[float] = []
+        epoch_spectral_vals: List[float] = []
+        epoch_sparsity_vals: List[float] = []
+
+        for _ in range(steps_per_epoch):
+            if global_step >= total_steps:
+                break
+
+            sampled_k = _sample_k_indices(
+                sr=sr,
+                freq_grid_size=freq_grid_size,
+                batch_size=batch_n,
+                np_rng=np_rng,
+                device=device,
+                paper_band_enable=bool(paper_band_enable),
+                paper_band_min_hz=band_min,
+                paper_band_max_hz=band_max,
+                exclude_dc=True,
+                prebuilt_pool=train_pool_tensor,
+                warn_on_replacement=True,
+            )
+
+            if optimizer is not None:
+                optimizer.zero_grad()
+
+            u = (
+                unit_vector_from_raw(v)
+                if matrix_kind == "householder"
+                else torch.full((n,), 0.5, dtype=dtype, device=device)
+            )
+            if learn_io:
+                b = normalize_l2(b_param)
+                c_l = normalize_l2(c_l_param)
+                c_r = normalize_l2(c_r_param)
+            else:
+                b = b_default
+                c_l = c_l_default
+                c_r = c_r_default
+
+            losses = evaluate_transfer_losses(
+                sr=sr,
+                nfft=nfft,
+                delay_samples=delay.tolist(),
+                gains=gains,
+                matrix_type=matrix_kind,
+                u=u,
+                b=b,
+                c_l=c_l,
+                c_r=c_r,
+                alpha_density=alpha_density,
+                spectral_mode=spectral_mode,
+                k_indices=sampled_k,
+                freq_grid_size=freq_grid_size,
+                paper_band_enable=bool(paper_band_enable),
+                paper_band_min_hz=band_min,
+                paper_band_max_hz=band_max,
+            )
+
+            if optimizer is not None:
+                losses["total"].backward()
+                optimizer.step()
+
+            total_v = float(losses["total"].detach().cpu())
+            spectral_v = float(losses["spectral"].detach().cpu())
+            sparsity_v = float(losses["sparsity"].detach().cpu())
+            epoch_total_vals.append(total_v)
+            epoch_spectral_vals.append(spectral_v)
+            epoch_sparsity_vals.append(sparsity_v)
+
+            history["step"].append(float(global_step))
+            history["epoch"].append(float(epoch_idx))
+            history["total"].append(total_v)
+            history["spectral"].append(spectral_v)
+            history["sparsity"].append(sparsity_v)
+            history["u_norm"].append(float(torch.linalg.vector_norm(u).detach().cpu()))
+            history["b_norm"].append(float(torch.linalg.vector_norm(b).detach().cpu()))
+            history["cL_norm"].append(float(torch.linalg.vector_norm(c_l).detach().cpu()))
+            history["cR_norm"].append(float(torch.linalg.vector_norm(c_r).detach().cpu()))
+
+            if log_every > 0 and (global_step % log_every == 0 or global_step == total_steps - 1):
+                sampled_hz = k_to_hz(
+                    sr=sr,
+                    freq_grid_size=freq_grid_size,
+                    k=sampled_k.to(dtype),
+                    dtype=dtype,
+                )
+                hz_mean = float(torch.mean(sampled_hz).detach().cpu())
+                hz_min = float(torch.min(sampled_hz).detach().cpu())
+                hz_max = float(torch.max(sampled_hz).detach().cpu())
+                print(
+                    f"step={global_step:05d} epoch={epoch_idx:03d} total={total_v:.6e} "
+                    f"spectral={spectral_v:.6e} sparsity={sparsity_v:.6e} "
+                    f"||u||={history['u_norm'][-1]:.3f} ||b||={history['b_norm'][-1]:.3f} "
+                    f"||cL||={history['cL_norm'][-1]:.3f} ||cR||={history['cR_norm'][-1]:.3f} "
+                    f"sampled_k_hz_mean={hz_mean:.3f} sampled_k_hz_min={hz_min:.3f} sampled_k_hz_max={hz_max:.3f}"
+                )
+            global_step += 1
+
+        with torch.no_grad():
+            u_eval = (
+                unit_vector_from_raw(v)
+                if matrix_kind == "householder"
+                else torch.full((n,), 0.5, dtype=dtype, device=device)
+            )
+            if learn_io:
+                b_eval = normalize_l2(b_param)
+                c_l_eval = normalize_l2(c_l_param)
+                c_r_eval = normalize_l2(c_r_param)
+            else:
+                b_eval = b_default
+                c_l_eval = c_l_default
+                c_r_eval = c_r_default
+
+            val_eval_subset = _evaluate_k_pool_chunked(
+                sr=sr,
+                nfft=nfft,
+                delay_samples=delay.tolist(),
+                gains=gains,
+                matrix_type=matrix_kind,
+                u=u_eval,
+                b=b_eval,
+                c_l=c_l_eval,
+                c_r=c_r_eval,
+                alpha_density=alpha_density,
+                spectral_mode=spectral_mode,
+                k_pool=val_pool_eval_tensor,
+                freq_grid_size=freq_grid_size,
+                paper_band_enable=bool(paper_band_enable),
+                paper_band_min_hz=band_min,
+                paper_band_max_hz=band_max,
+                chunk_size=batch_n,
+            )
+            val_subset_spectral = float(val_eval_subset["spectral"].detach().cpu())
+            val_subset_dev = float(val_eval_subset["dev_db"].detach().cpu())
+            val_eval_full = _evaluate_k_pool_chunked(
+                sr=sr,
+                nfft=nfft,
+                delay_samples=delay.tolist(),
+                gains=gains,
+                matrix_type=matrix_kind,
+                u=u_eval,
+                b=b_eval,
+                c_l=c_l_eval,
+                c_r=c_r_eval,
+                alpha_density=alpha_density,
+                spectral_mode=spectral_mode,
+                k_pool=full_pool_tensor,
+                freq_grid_size=freq_grid_size,
+                paper_band_enable=bool(paper_band_enable),
+                paper_band_min_hz=band_min,
+                paper_band_max_hz=band_max,
+                chunk_size=batch_n,
+            )
+            val_spectral = float(val_eval_full["spectral"].detach().cpu())
+            val_dev = float(val_eval_full["dev_db"].detach().cpu())
+
+        if val_dev < best_val_dev:
+            best_val_dev = val_dev
+            best_val_spectral = val_spectral
+            best_step = max(global_step - 1, 0)
+            best_u = u_eval.detach().clone()
+            best_b = b_eval.detach().clone()
+            best_c_l = c_l_eval.detach().clone()
+            best_c_r = c_r_eval.detach().clone()
+            best_U = val_eval_full["U"].detach().clone()
+
+        history["epoch_idx"].append(float(epoch_idx))
+        history["epoch_steps"].append(float(len(epoch_total_vals)))
+        history["epoch_train_total"].append(float(np.mean(epoch_total_vals) if epoch_total_vals else float("nan")))
+        history["epoch_train_spectral"].append(
+            float(np.mean(epoch_spectral_vals) if epoch_spectral_vals else float("nan"))
+        )
+        history["epoch_train_sparsity"].append(
+            float(np.mean(epoch_sparsity_vals) if epoch_sparsity_vals else float("nan"))
+        )
+        history["val_subset_spectral_loss_like_50_12k"].append(float(val_subset_spectral))
+        history["val_subset_dev_db_50_12k"].append(float(val_subset_dev))
+        history["val_spectral_loss_like_50_12k"].append(float(val_spectral))
+        history["val_spectral_dev_db_50_12k"].append(float(val_dev))
+        history["best_val_spectral_dev_db_50_12k"].append(float(best_val_dev))
+        if log_every > 0:
+            print(
+                f"[Epoch {epoch_idx:03d}] train_total={history['epoch_train_total'][-1]:.6e} "
+                f"train_spectral={history['epoch_train_spectral'][-1]:.6e} "
+                f"val_subset_spectral_50_12k={val_subset_spectral:.6e} "
+                f"val_spectral_50_12k={val_spectral:.6e} val_dev_db_50_12k={val_dev:.6f} "
+                f"best_val_dev_db_50_12k={best_val_dev:.6f} best_step={best_step}"
+            )
+
+        if global_step >= total_steps:
+            break
+
+    final_u = best_u if best_u is not None else (
+        unit_vector_from_raw(v.detach())
+        if matrix_kind == "householder"
+        else torch.full((n,), 0.5, dtype=dtype, device=device)
+    )
+    final_b = best_b if best_b is not None else (normalize_l2(b_param.detach()) if learn_io else b_default)
+    final_c_l = best_c_l if best_c_l is not None else (normalize_l2(c_l_param.detach()) if learn_io else c_l_default)
+    final_c_r = best_c_r if best_c_r is not None else (normalize_l2(c_r_param.detach()) if learn_io else c_r_default)
+
+    full_band_k = torch.as_tensor(band_k_pool, dtype=torch.int64, device=device)
+    final_eval = evaluate_transfer_losses(
+        sr=sr,
+        nfft=nfft,
+        delay_samples=delay.tolist(),
+        gains=gains,
+        matrix_type=matrix_kind,
+        u=final_u,
+        b=final_b,
+        c_l=final_c_l,
+        c_r=final_c_r,
+        alpha_density=alpha_density,
+        spectral_mode=spectral_mode,
+        k_indices=full_band_k,
+        freq_grid_size=freq_grid_size,
+        paper_band_enable=bool(paper_band_enable),
+        paper_band_min_hz=band_min,
+        paper_band_max_hz=band_max,
+    )
+    final_U = best_U if best_U is not None else final_eval["U"]
+    final_dev = float(
+        spectral_dev_db_from_transfer(final_eval["H_l"], final_eval["H_r"], exclude_dc=False)
+        .detach()
+        .cpu()
+    )
+    final_losses = {
+        "total": float(final_eval["total"].detach().cpu()),
+        "spectral": float(final_eval["spectral"].detach().cpu()),
+        "sparsity": float(final_eval["sparsity"].detach().cpu()),
+        "best_val_step": float(best_step),
+        "best_val_spectral_loss_like_50_12k": float(best_val_spectral),
+        "best_val_spectral_dev_db_50_12k": float(best_val_dev),
+        "final_spectral_dev_db_50_12k": float(final_dev),
+        "training_band_k_count": float(band_k_pool_count),
+        "band_k_min": float(band_k_min),
+        "band_k_max": float(band_k_max),
+        "train_band_k_count": float(train_pool.size),
+        "val_band_k_count": float(val_pool.size),
+        "freq_grid_size": float(freq_grid_size),
+        "paper_band_enable": float(1.0 if paper_band_enable else 0.0),
+        "paper_band_min_hz": float(band_min),
+        "paper_band_max_hz": float(band_max),
+        "gamma_train": float(gamma_train),
+        "stability_gamma": float(stability_gamma_clamped),
+        "val_fraction": float(val_fraction),
+    }
+
+    return OptimizeResult(
+        matrix_type=matrix_kind,
+        gamma_used=float(gamma_used),
+        gamma_train=float(gamma_train),
+        stability_gamma=float(stability_gamma_clamped),
+        training_mode=training_mode,
+        u=final_u.detach().cpu(),
+        U=final_U.detach().cpu(),
+        b=final_b.detach().cpu(),
+        c_l=final_c_l.detach().cpu(),
+        c_r=final_c_r.detach().cpu(),
+        gains=gains.detach().cpu(),
+        losses=final_losses,
+        history=history,
+    )

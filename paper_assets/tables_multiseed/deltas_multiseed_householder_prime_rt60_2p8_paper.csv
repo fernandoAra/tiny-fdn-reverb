@@ -1,0 +1,41 @@
+seed,scenario,metric,delta_vs_fixed,fixed_value,scenario_value,direction_note
+0,u_only,spectral_dev_db_50_12k,-0.9941318876163443,6.609385057445243,7.603516945061587,lower is better
+0,u_only,spectral_loss_like_50_12k,-0.3162106546742004,0.6711707659523574,0.9873814206265578,lower is better
+0,u_only,ringiness,-3.923752891891585,16.025808865836392,19.949561757727977,lower is better
+0,u_only,echo_density_events_per_s_50_300ms,0.0,48.0,48.0,higher is denser / better
+0,full,spectral_dev_db_50_12k,-1.6900618945177293,6.609385057445243,8.299446951962972,lower is better
+0,full,spectral_loss_like_50_12k,-0.4214716884261347,0.6711707659523574,1.092642454378492,lower is better
+0,full,ringiness,-4.915876946583026,16.025808865836392,20.94168581241942,lower is better
+0,full,echo_density_events_per_s_50_300ms,-4.0,48.0,44.0,higher is denser / better
+1,u_only,spectral_dev_db_50_12k,0.7669127381287835,6.609385057445243,5.842472319316459,lower is better
+1,u_only,spectral_loss_like_50_12k,0.11102898023197116,0.6711707659523574,0.5601417857203862,lower is better
+1,u_only,ringiness,4.58511556586425,16.02580894134863,11.44069337548438,lower is better
+1,u_only,echo_density_events_per_s_50_300ms,8.0,48.0,56.0,higher is denser / better
+1,full,spectral_dev_db_50_12k,0.665422495647995,6.609385057445243,5.943962561797248,lower is better
+1,full,spectral_loss_like_50_12k,0.10188223281288888,0.6711707659523574,0.5692885331394685,lower is better
+1,full,ringiness,4.555312408886351,16.02580894134863,11.470496532462278,lower is better
+1,full,echo_density_events_per_s_50_300ms,12.0,48.0,60.0,higher is denser / better
+2,u_only,spectral_dev_db_50_12k,1.5917136358018533,6.609385057445243,5.0176714216433895,lower is better
+2,u_only,spectral_loss_like_50_12k,0.11292522665694738,0.6711707659523574,0.55824553929541,lower is better
+2,u_only,ringiness,1.9990967651599476,16.025808930765123,14.026712165605176,lower is better
+2,u_only,echo_density_events_per_s_50_300ms,4.0,48.0,52.0,higher is denser / better
+2,full,spectral_dev_db_50_12k,0.9084548913198365,6.609385057445243,5.700930166125406,lower is better
+2,full,spectral_loss_like_50_12k,0.03627715033589751,0.6711707659523574,0.6348936156164598,lower is better
+2,full,ringiness,1.58247181502281,16.025808930765123,14.443337115742313,lower is better
+2,full,echo_density_events_per_s_50_300ms,4.0,48.0,52.0,higher is denser / better
+3,u_only,spectral_dev_db_50_12k,0.8210796401920906,6.609385057445243,5.788305417253152,lower is better
+3,u_only,spectral_loss_like_50_12k,0.07181550479377308,0.6711707659523574,0.5993552611585843,lower is better
+3,u_only,ringiness,0.6541766421206923,16.025808921727716,15.371632279607024,lower is better
+3,u_only,echo_density_events_per_s_50_300ms,0.0,48.0,48.0,higher is denser / better
+3,full,spectral_dev_db_50_12k,0.646215702799803,6.609385057445243,5.96316935464544,lower is better
+3,full,spectral_loss_like_50_12k,0.03852033773603614,0.6711707659523574,0.6326504282163212,lower is better
+3,full,ringiness,-0.23074545226640097,16.025808921727716,16.256554373994117,lower is better
+3,full,echo_density_events_per_s_50_300ms,4.0,48.0,52.0,higher is denser / better
+4,u_only,spectral_dev_db_50_12k,-1.0383213239242064,6.609385057445243,7.647706381369449,lower is better
+4,u_only,spectral_loss_like_50_12k,-0.30700672282124486,0.6711707659523574,0.9781774887736022,lower is better
+4,u_only,ringiness,-5.650873734155702,16.025808875607524,21.676682609763226,lower is better
+4,u_only,echo_density_events_per_s_50_300ms,-4.0,48.0,44.0,higher is denser / better
+4,full,spectral_dev_db_50_12k,-1.5615199774503257,6.609385057445243,8.170905034895569,lower is better
+4,full,spectral_loss_like_50_12k,-0.39839979471850184,0.6711707659523574,1.0695705606708592,lower is better
+4,full,ringiness,-7.133221759885529,16.025808875607524,23.159030635493053,lower is better
+4,full,echo_density_events_per_s_50_300ms,-4.0,48.0,44.0,higher is denser / better

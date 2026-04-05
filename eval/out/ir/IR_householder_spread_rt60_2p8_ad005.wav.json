@@ -1,0 +1,12 @@
+{
+  "preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/presets/householder_spread_rt60_2p8_ad005.json",
+  "wav_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/out/ir/IR_householder_spread_rt60_2p8_ad005.wav",
+  "config_id": "householder_spread_rt60_2p8_ad005",
+  "matrix_type": "householder",
+  "sample_rate": 48000,
+  "seconds": 4,
+  "samples": 192000,
+  "channels": 2,
+  "delay_samples": [1200, 1800, 2400, 3000],
+  "note": "Offline tiny-FDN renderer; intentionally close to plugin core but not sample-identical."
+}

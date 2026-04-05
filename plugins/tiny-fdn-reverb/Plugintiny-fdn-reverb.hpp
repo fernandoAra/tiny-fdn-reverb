@@ -7,7 +7,11 @@
 
 #include "DistrhoPlugin.hpp"
 #include "CParamSmooth.hpp"
+#include "DiffFdnPresets.hpp"
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 #include <memory>
 
@@ -38,11 +42,110 @@ public:
         paramDensity100ms,   // events/ms @100 ms
         paramDensity300ms,   // events/ms @300 ms
         paramRinginess,      // 0..1 periodicity index (higher = more metallic)
+        paramWetEnv,         // 0..1 RMS of wet output (for UI trace fallback)
+        paramHouseholderMode, // 0=fixed u, 1=Diff preset u (Householder branch)
         paramCount
+    };
+
+    static constexpr uint32_t kEnvTraceSize = 256u;
+    static constexpr uint32_t kUiMatrixSize = 4u;
+
+    struct UiStateSnapshot {
+        float matrixMorphTarget = 0.f;
+        float matrixMorphApplied = 0.f;
+        int householderMode = 0;
+        int diffRoutingMode = 0;
+        int diffPresetIndex = -1;
+        std::array<float, kUiMatrixSize> fixedU{{0.5f, 0.5f, 0.5f, 0.5f}};
+        std::array<float, kUiMatrixSize> activeU{{0.5f, 0.5f, 0.5f, 0.5f}};
+        std::array<float, kUiMatrixSize> fixedB{{0.25f, 0.25f, 0.25f, 0.25f}};
+        std::array<float, kUiMatrixSize> activeB{{0.25f, 0.25f, 0.25f, 0.25f}};
+        std::array<float, kUiMatrixSize> fixedCL{{0.5f, -0.5f, 0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> activeCL{{0.5f, -0.5f, 0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> fixedCR{{0.5f, 0.5f, -0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> activeCR{{0.5f, 0.5f, -0.5f, -0.5f}};
     };
 
     PluginTinyFdnReverb();
     ~PluginTinyFdnReverb() override {}
+
+    uint32_t getEnvTraceWriteIndex() const noexcept
+    {
+        return mEnvTraceWrite.load(std::memory_order_acquire);
+    }
+
+    float getEnvTraceValue(uint32_t sequenceIndex) const noexcept
+    {
+        const uint32_t bits = mEnvTraceBits[sequenceIndex & (kEnvTraceSize - 1u)].load(std::memory_order_relaxed);
+        float value = 0.f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    }
+
+    float getMeterEDTms() const noexcept
+    {
+        return bitsToFloat(mEDTmsBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterRT60s() const noexcept
+    {
+        return bitsToFloat(mRT60sBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterDensity100() const noexcept
+    {
+        return bitsToFloat(mDen100Bits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterDensity300() const noexcept
+    {
+        return bitsToFloat(mDen300Bits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterRinginess() const noexcept
+    {
+        return bitsToFloat(mRinginessBits.load(std::memory_order_relaxed));
+    }
+
+    float getMeterWetEnv() const noexcept
+    {
+        return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
+    }
+
+    void copyUiStateSnapshot(UiStateSnapshot& out) const noexcept
+    {
+        out.matrixMorphTarget = bitsToFloat(mUiStateMorphTargetBits.load(std::memory_order_acquire));
+        out.matrixMorphApplied = bitsToFloat(mUiStateMorphAppliedBits.load(std::memory_order_acquire));
+        out.householderMode = mUiStateHouseholderMode.load(std::memory_order_acquire);
+        out.diffRoutingMode = mUiStateDiffRoutingMode.load(std::memory_order_acquire);
+        out.diffPresetIndex = mUiStatePresetIndex.load(std::memory_order_acquire);
+
+        for (uint32_t i = 0; i < kUiMatrixSize; ++i) {
+            out.fixedU[i] = mHouseholderUFixed[i];
+            out.activeU[i] = bitsToFloat(mUiStateActiveUBits[i].load(std::memory_order_relaxed));
+            out.fixedB[i] = mInjectionBFixed[i];
+            out.activeB[i] = bitsToFloat(mUiStateActiveBBits[i].load(std::memory_order_relaxed));
+            out.fixedCL[i] = mOutputCLFixed[i];
+            out.activeCL[i] = bitsToFloat(mUiStateActiveCLBits[i].load(std::memory_order_relaxed));
+            out.fixedCR[i] = mOutputCRFixed[i];
+            out.activeCR[i] = bitsToFloat(mUiStateActiveCRBits[i].load(std::memory_order_relaxed));
+        }
+    }
+
+    static const DiffPreset* getDiffPresetByIndex(int index) noexcept
+    {
+        if (index < 0 || index >= static_cast<int>(kDiffPresetCount))
+            return nullptr;
+
+        return &kDiffPresets[index];
+    }
+
+    void setMatrixMorphFromUI(float v) noexcept
+    {
+        const float vm = (v < 0.f) ? 0.f : (v > 1.f ? 1.f : v);
+        mUiMatrixMorphRequestBits.store(floatToBits(vm), std::memory_order_relaxed);
+        mUiMatrixMorphRequestSeq.fetch_add(1u, std::memory_order_release);
+    }
 
 protected:
     // === BOILERPLATE BEGIN: DPF plugin interface hooks (metadata/params/programs) ===
@@ -61,6 +164,13 @@ protected:
     // programs
     void initProgramName(uint32_t index, String& programName) override;
     void loadProgram(uint32_t index) override;
+#if DISTRHO_PLUGIN_WANT_STATE
+    void initState(uint32_t index, State& state) override;
+    void setState(const char* key, const char* value) override;
+#endif
+#if DISTRHO_PLUGIN_WANT_FULL_STATE
+    String getState(const char* key) const override;
+#endif
     // === BOILERPLATE END ===
 
     // lifecycle / audio
@@ -85,12 +195,14 @@ private:
     float  fLastSR      = 48000.f;
     float  fRt60        = 1.5f;
     float  fMix         = 0.25f;
-    int    fMatrixType  = 0;
+    int    fMatrixType  = 0; // derived indicator from fMatrixMorph
     int    fDelaySet    = 0;
     float  fSize        = 1.0f;
     float  fDampHz      = 6000.f;
     float  fMatrixMorph = 0.0f;
+    float  fMatrixMorphApplied = 0.0f;
     int    fPing        = 0;
+    int    fHouseholderMode = 0; // 0 fixed, 1 Diff preset u
 
     // NEW interactive controls
     float  fModDepth    = 0.0f;     // 0..1
@@ -113,6 +225,8 @@ private:
     int    fAppliedDelaySet = 0;
     int    fAppliedMatrixType = 0;
     int    fAppliedMetalBoost = 0;
+    int    fAppliedHouseholderMode = 0;
+    int    fAppliedDiffRoutingMode = -1;
 
     // short mute after topology changes (samples)
     int    mMuteSamples = 0;
@@ -134,9 +248,49 @@ private:
     float mDen100 = 0.f;     // events/ms
     float mDen300 = 0.f;     // events/ms
     float mRinginess = 0.f;  // 0..1
+    float mWetEnv = 0.f;     // 0..1 block RMS of wet output
+
+    // Fixed and learned Householder vectors (unit-norm), selected outside per-sample loop.
+    std::array<float, kN> mHouseholderUFixed {{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mHouseholderUDiff  {{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mHouseholderUActive{{0.5f, 0.5f, 0.5f, 0.5f}};
+    std::array<float, kN> mInjectionBFixed{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLFixed{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRFixed{{0.5f, 0.5f, -0.5f, -0.5f}};
+    std::array<float, kN> mInjectionBDiff{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLDiff{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRDiff{{0.5f, 0.5f, -0.5f, -0.5f}};
+    std::array<float, kN> mInjectionBActive{{0.25f, 0.25f, 0.25f, 0.25f}};
+    std::array<float, kN> mOutputCLActive{{0.5f, -0.5f, 0.5f, -0.5f}};
+    std::array<float, kN> mOutputCRActive{{0.5f, 0.5f, -0.5f, -0.5f}};
+    bool mDiffPresetHasFullIo = false;
+    int mDiffRoutingMode = 0; // 0=fixed baseline, 1=Diff u-only, 2=Diff full (u+b+c)
+    const DiffPreset* mActiveDiffPreset = nullptr;
 
     // throttle UI updates to ~20 Hz
     uint32_t mSamplesSincePush = 0;
+
+    // Audio-thread writer, UI-thread reader (direct access path).
+    std::array<std::atomic<uint32_t>, kEnvTraceSize> mEnvTraceBits{};
+    std::atomic<uint32_t> mEnvTraceWrite{0};
+    std::atomic<uint32_t> mEDTmsBits{0u};
+    std::atomic<uint32_t> mRT60sBits{0u};
+    std::atomic<uint32_t> mDen100Bits{0u};
+    std::atomic<uint32_t> mDen300Bits{0u};
+    std::atomic<uint32_t> mRinginessBits{0u};
+    std::atomic<uint32_t> mWetEnvBits{0u};
+    std::atomic<uint32_t> mUiMatrixMorphRequestBits{0u};
+    std::atomic<uint32_t> mUiMatrixMorphRequestSeq{0u};
+    uint32_t mAppliedUiMatrixMorphRequestSeq = 0u;
+    std::atomic<uint32_t> mUiStateMorphTargetBits{0u};
+    std::atomic<uint32_t> mUiStateMorphAppliedBits{0u};
+    std::atomic<int> mUiStateHouseholderMode{0};
+    std::atomic<int> mUiStateDiffRoutingMode{0};
+    std::atomic<int> mUiStatePresetIndex{-1};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveUBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveBBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveCLBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveCRBits{};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};
@@ -171,9 +325,29 @@ private:
     // helpers
     void selectBaseAndUpdateDelays(double sr) noexcept;
     void updateLineGainsFromRt60(double sr) noexcept;
+    void updateDiffPresetForContext(double sr) noexcept;
+    void updateActiveHouseholderU() noexcept;
+    void publishUiState() noexcept;
+    static int findDiffPresetIndex(const DiffPreset* preset) noexcept;
+    static bool isFiniteVector(const std::array<float, kN>& v) noexcept;
+    static float maxAbsDiff(const std::array<float, kN>& a, const std::array<float, kN>& b) noexcept;
+    static void normalizeHouseholderU(std::array<float, kN>& u) noexcept;
     inline void hadamardMix4(const float in[kN], float out[kN]) const noexcept;
+    inline void householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept;
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
+    static uint32_t floatToBits(float value) noexcept
+    {
+        uint32_t bits = 0u;
+        std::memcpy(&bits, &value, sizeof(float));
+        return bits;
+    }
+    static float bitsToFloat(uint32_t bits) noexcept
+    {
+        float value = 0.f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    }
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginTinyFdnReverb)
 };
