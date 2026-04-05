@@ -13,6 +13,8 @@
   `python3 eval/scripts/run_multiseed_fixed_vs_diff.py --config-id householder_prime_rt60_2p8_paper --seeds 0,1,2,3,4 --scope all --spectral-mode unity --train-lossless --no-learn-io`
 - Export paper-ready files:  
   `bash eval/scripts/export_paper_assets.sh`
+- Regenerate Chapter 2 theory figures directly from the notebook source:  
+  `python theoretical_plots/run_notebook_figures.py`
 - Export with optional multiseed bundle:  
   `bash eval/scripts/export_paper_assets.sh "" householder_prime_rt60_2p8_paper`
 
@@ -33,6 +35,28 @@ Notes:
 - Add `--require-lufs` if you want the demo export to fail instead of falling back when LUFS cannot be computed.
 - Optional dependency for LUFS matching only: `python3 -m pip install pyloudnorm`
 
+### Defense demo bundle (canonical flow)
+
+Use one wrapper command to regenerate the fixed-vs-diff figures, matched demo
+WAVs, and a bundle manifest in one place:
+
+`bash eval/scripts/build_demo_bundle.sh --preset eval/out/presets/householder_prime_rt60_2p8_paper_seed0.json --sync-plugin-header`
+
+Bundle output:
+
+- `eval/out/demo_bundle/<preset-slug>/bundle_manifest.json`
+- `eval/out/demo_bundle/<preset-slug>/fixed_vs_diff_run.json`
+- `eval/out/demo_bundle/<preset-slug>/demo_manifest.json`
+- `eval/out/demo_bundle/<preset-slug>/fixed_vs_diff_mag_overlay.png`
+- `eval/out/demo_bundle/<preset-slug>/fixed_vs_diff_irfft_overlay.png`
+- `eval/out/demo_bundle/<preset-slug>/fixed_vs_diff_diffusion.png`
+- `eval/out/demo_bundle/<preset-slug>/fixed_vs_diff_metrics_bars.png`
+- `eval/out/demo_bundle/<preset-slug>/summary_fixed_vs_diff.csv`
+- `eval/out/demo_bundle/<preset-slug>/demo_<slug>_*_{raw|matched}.wav`
+
+For demo fairness, matched demo WAVs are treated as the primary evidence, while
+live plugin toggling is secondary realtime proof.
+
 ## Pinned external references
 
 - diff-fdn-colorless commit:  
@@ -44,25 +68,53 @@ Notes:
 
 ## Output locations
 
-- Figures: `paper_assets/figures/`
-- Tables: `paper_assets/tables/`
-- Multiseed figures: `paper_assets/figures_multiseed/`
-- Multiseed tables: `paper_assets/tables_multiseed/`
+- Chapter 2 explanatory figures: `paper_assets/figures/`
+- Chapter 5 result figures: `paper_assets/figures/`
+- Chapter 5 result tables: `paper_assets/tables/`
+- Chapter 5 multiseed figures: `paper_assets/figures_multiseed/`
+- Chapter 5 multiseed tables: `paper_assets/tables_multiseed/`
 
-## Exported files
+## Chapter 2 explanatory figures
+
+- `paper_assets/figures/fig1_feedback_comb_mag.png` (feedback comb magnitude response)
+- `paper_assets/figures/fig2_allpass_impulse_comparison.png` (comb-vs-allpass impulse-response comparison)
+- `paper_assets/figures/waveform_to_delayed_samples.png` (waveform -> samples -> delayed copies explainer for Section 2.1)
+- `paper_assets/figures/fig_fdn_4x4_block_diagram.{svg,png,pdf}` (Section 2.2 FDN signal-flow block diagram)
+- `paper_assets/figures/fig_unilossless_feedback_mixing_4x4.{svg,png,pdf}` (Section 2.3 unilossless feedback mixing explainer)
+- `paper_assets/figures/fig_homogeneous_decay_rt60_explanation.{svg,png,pdf}` (Section 2.4 homogeneous decay / RT60 explainer)
+
+The last three Chapter 2 figures are generated directly by:
+
+- `python3 eval/scripts/generate_fdn_block_diagram.py`
+- `python3 eval/scripts/generate_unilossless_feedback_mixing_figure.py`
+- `python3 eval/scripts/generate_homogeneous_decay_rt60_explanation.py`
+
+## Chapter 5 result figures and tables
 
 - `paper_assets/figures/fig_mag_fixed_vs_diff.png` (analytic transfer overlay + delta)
 - `paper_assets/figures/fig_irfft_fixed_vs_diff.png` (IR FFT windowed overlay + delta)
-- `eval/figs/fixed_vs_diff_edc_overlay.png` (EDC overlay with EDT/T20/T30 fit bands)
+- `paper_assets/figures/fig_edc_fixed_vs_diff.png` (EDC overlay / decay comparison)
 - `paper_assets/figures/fig_diffusion_fixed_vs_diff.png` (kurtosis diffusion curves)
 - `paper_assets/figures/fig_metrics_fixed_vs_diff.png` (bar summary)
 - `paper_assets/tables/table_fixed_vs_diff.csv`
+
+Single-run paper/result variants in the same directory follow the same naming
+scheme, for example:
+
+- `paper_assets/figures/fig_mag_fixed_vs_diff_<slug>.png`
+- `paper_assets/figures/fig_irfft_fixed_vs_diff_<slug>.png`
+- `paper_assets/figures/fig_edc_fixed_vs_diff_<slug>.png`
+- `paper_assets/figures/fig_diffusion_fixed_vs_diff_<slug>.png`
+- `paper_assets/figures/fig_metrics_fixed_vs_diff_<slug>.png`
+- `paper_assets/figures/fig_edc_representative_<config>.png`
+- `paper_assets/figures/fig_irfft_representative_<config>.png`
+
+## Chapter 5 multiseed aggregates
+
 - `paper_assets/figures_multiseed/fig_multiseed_metrics_<config>.png`
 - `paper_assets/figures_multiseed/fig_multiseed_deltas_<config>.png`
-- `paper_assets/figures_multiseed/fig_multiseed_improvement_<config>.png`
 - `paper_assets/figures_multiseed/fig_multiseed_diffusion_<config>.png`
 - `paper_assets/figures_multiseed/fig_multiseed_echo_density_<config>.png`
 - `paper_assets/tables_multiseed/table_multiseed_<config>.csv`
 - `paper_assets/tables_multiseed/deltas_multiseed_<config>.csv`
-- `paper_assets/tables_multiseed/wins_multiseed_<config>.csv`
 - `paper_assets/tables_multiseed/stats_multiseed_<config>.json`

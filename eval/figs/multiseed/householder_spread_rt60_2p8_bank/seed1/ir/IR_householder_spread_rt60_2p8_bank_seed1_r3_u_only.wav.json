@@ -1,0 +1,112 @@
+{
+  "timestamp_utc": "2026-03-13T15:32:08.882857+00:00",
+  "git_commit": "0a87ffe7a9995207543f9b461a44bc5c3c04cc84",
+  "compare_script": "eval/scripts/compare_fixed_vs_diff.py",
+  "renderer": "eval/tools/gen_ir.cpp",
+  "base_config_id": "householder_spread_rt60_2p8_bank_seed1_r3",
+  "scope": "all",
+  "mode_key": "u_only",
+  "mode_label": "Diff Householder (u-only)",
+  "fixed_u_source": "preset",
+  "fixed_u": [
+    0.5,
+    0.5,
+    0.5,
+    0.5
+  ],
+  "source_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/seed1/best_preset.json",
+  "render_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/seed1/render_presets/householder_spread_rt60_2p8_bank_seed1_r3_u_only.json",
+  "wav_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/seed1/ir/IR_householder_spread_rt60_2p8_bank_seed1_r3_u_only.wav",
+  "config_id": "householder_spread_rt60_2p8_bank_seed1_r3_u_only",
+  "sr": 48000,
+  "nfft": 2048,
+  "nfft_used": 536400,
+  "aligned_length_samples": 536400,
+  "delay_set": "spread",
+  "delay_samples": [
+    1200,
+    1800,
+    2400,
+    3000
+  ],
+  "rt60": 2.8,
+  "rt60_target": 2.8,
+  "gamma_used": 0.9999486043321197,
+  "gamma_source": "rt60_target",
+  "gains": [
+    0.9401870948776828,
+    0.9116359195539531,
+    0.8839517733745369,
+    0.8571083267915761
+  ],
+  "matrix_type": "householder",
+  "u": [
+    -0.275514038207779,
+    0.8944348449969307,
+    -0.1961101838965006,
+    -0.2926074479192897
+  ],
+  "b": [
+    0.25,
+    0.25,
+    0.25,
+    0.25
+  ],
+  "cL": [
+    0.5,
+    -0.5,
+    0.5,
+    -0.5
+  ],
+  "cR": [
+    0.5,
+    0.5,
+    -0.5,
+    -0.5
+  ],
+  "ir_seconds": 11.2,
+  "channel_used_for_analysis": "L",
+  "normalization_peak_common": 0.407721608877182,
+  "diffusion_proxy_name": "short_time_excess_kurtosis_rmsnorm",
+  "diffusion_proxy_definition": "Per-frame excess kurtosis on RMS-normalized frames; windows below RMS threshold are ignored. Lower values indicate more Gaussian-like amplitude statistics and higher diffusion (proxy).",
+  "diffusion_proxy_window_ms": 20.0,
+  "diffusion_proxy_hop_ms": 5.0,
+  "diffusion_proxy_summary_window_s": [
+    0.05,
+    0.3
+  ],
+  "echo_density_proxy_name": "envelope_peak_event_rate",
+  "echo_density_proxy_definition": "Short-time RMS envelope peak/event rate with envelope normalization on first 50 ms and threshold = median(env) + k*MAD(env). Summary is events/s in window.",
+  "echo_density_threshold_db": -30.0,
+  "echo_density_mad_k": 3.0,
+  "echo_density_min_spacing_ms": 1.0,
+  "echo_density_window_ms": 10.0,
+  "echo_density_hop_ms": 5.0,
+  "echo_density_summary_window_s": [
+    0.05,
+    0.3
+  ],
+  "level_tmin": 0.05,
+  "level_tmax": 0.3,
+  "level_eps": 1e-12,
+  "level_metrics_definition": "rms_db = 20log10(sqrt(mean(x^2))+eps); peak_db = 20log10(max(abs(x))+eps); x is normalized per-run by common peak across scenarios.",
+  "paper_band_hz": [
+    50.0,
+    12000.0
+  ],
+  "paper_band_metrics": [
+    "spectral_loss_like_50_12k",
+    "spectral_dev_db_50_12k"
+  ],
+  "full_has_learned_io": true,
+  "scenario_has_learned_io": false,
+  "io_diff_b_maxabs_vs_default": 0.0,
+  "io_diff_cL_maxabs_vs_default": 0.0,
+  "io_diff_cR_maxabs_vs_default": 0.0,
+  "echo_events_count_50_300ms": 31,
+  "echo_window_seconds": 0.25,
+  "compare_lti_enforced": true,
+  "compare_mod_depth": 0.0,
+  "compare_detune": 0.0,
+  "compare_damp_hz": 1000000000.0
+}

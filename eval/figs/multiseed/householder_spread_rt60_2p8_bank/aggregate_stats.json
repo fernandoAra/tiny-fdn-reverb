@@ -1,0 +1,338 @@
+{
+  "config_id": "householder_spread_rt60_2p8_bank",
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "n_rows_seed_mode": 15,
+  "metrics": {
+    "fixed": {
+      "spectral_loss_like": {
+        "mean": 0.8527722588005279,
+        "std": 0.0,
+        "median": 0.8527722588005279,
+        "min": 0.8527722588005279,
+        "max": 0.8527722588005279,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "spectral_loss_like_50_12k": {
+        "mean": 0.8526599292319215,
+        "std": 1.1102230246251565e-16,
+        "median": 0.8526599292319216,
+        "min": 0.8526599292319216,
+        "max": 0.8526599292319216,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "spectral_dev_db": {
+        "mean": 7.8329971587429785,
+        "std": 8.881784197001252e-16,
+        "median": 7.832997158742978,
+        "min": 7.832997158742978,
+        "max": 7.832997158742978,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "spectral_dev_db_50_12k": {
+        "mean": 7.833805588234526,
+        "std": 0.0,
+        "median": 7.833805588234526,
+        "min": 7.833805588234526,
+        "max": 7.833805588234526,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "rt60_s": {
+        "mean": 2.805333524803201,
+        "std": 0.0,
+        "median": 2.805333524803201,
+        "min": 2.805333524803201,
+        "max": 2.805333524803201,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "edt_s": {
+        "mean": 2.8146403431789926,
+        "std": 3.4399002279594067e-16,
+        "median": 2.8146403431789926,
+        "min": 2.814640343178992,
+        "max": 2.814640343178993,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "ringiness": {
+        "mean": 16.104308952513826,
+        "std": 7.06689477383224e-08,
+        "median": 16.104308921627098,
+        "min": 16.104308875944294,
+        "max": 16.104309045033403,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "kurtosis_mean_50_300ms": {
+        "mean": 761.4788826277429,
+        "std": 3.885496280535979,
+        "median": 764.6513770560077,
+        "min": 756.7201409853452,
+        "max": 764.651377056008,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      },
+      "echo_density_events_per_s_50_300ms": {
+        "mean": 124.0,
+        "std": 0.0,
+        "median": 124.0,
+        "min": 124.0,
+        "max": 124.0,
+        "n": 5.0,
+        "wins_count_vs_fixed": NaN
+      }
+    },
+    "u_only": {
+      "spectral_loss_like": {
+        "mean": 0.9573363567104023,
+        "std": 0.25702713070019223,
+        "median": 0.8940800117849654,
+        "min": 0.6421068351213463,
+        "max": 1.328756688961568,
+        "n": 5.0,
+        "wins_count_vs_fixed": 2.0
+      },
+      "spectral_loss_like_50_12k": {
+        "mean": 0.957658545424902,
+        "std": 0.2571044648192906,
+        "median": 0.8944679119707256,
+        "min": 0.6424937623450576,
+        "max": 1.3292468250771543,
+        "n": 5.0,
+        "wins_count_vs_fixed": 2.0
+      },
+      "spectral_dev_db": {
+        "mean": 6.737040579040331,
+        "std": 0.9141498420697438,
+        "median": 7.016338884592389,
+        "min": 5.357245851951843,
+        "max": 7.821316734741263,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "spectral_dev_db_50_12k": {
+        "mean": 6.737020891884596,
+        "std": 0.9139588409430864,
+        "median": 7.015635364924342,
+        "min": 5.357815531206677,
+        "max": 7.821307882233552,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "rt60_s": {
+        "mean": 2.8061389398325725,
+        "std": 0.004144339118434836,
+        "median": 2.8056624154486567,
+        "min": 2.8006821445650694,
+        "max": 2.81271231639666,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      },
+      "edt_s": {
+        "mean": 2.8659737468120188,
+        "std": 0.019970959531001378,
+        "median": 2.861736064567653,
+        "min": 2.837875921798181,
+        "max": 2.8905637854152193,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      },
+      "ringiness": {
+        "mean": 17.33887476889423,
+        "std": 4.832631032574743,
+        "median": 14.185140299606957,
+        "min": 12.780338661676751,
+        "max": 24.47974362994073,
+        "n": 5.0,
+        "wins_count_vs_fixed": 3.0
+      },
+      "kurtosis_mean_50_300ms": {
+        "mean": 801.0491079767244,
+        "std": 41.55580752402278,
+        "median": 772.4812105887173,
+        "min": 761.13836223007,
+        "max": 865.7081732807512,
+        "n": 5.0,
+        "wins_count_vs_fixed": 1.0
+      },
+      "echo_density_events_per_s_50_300ms": {
+        "mean": 124.0,
+        "std": 0.0,
+        "median": 124.0,
+        "min": 124.0,
+        "max": 124.0,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      }
+    },
+    "full": {
+      "spectral_loss_like": {
+        "mean": 0.4809330037443395,
+        "std": 0.036978196248477875,
+        "median": 0.455704071151327,
+        "min": 0.45212453211324005,
+        "max": 0.5478784348234904,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "spectral_loss_like_50_12k": {
+        "mean": 0.48101912155063964,
+        "std": 0.03691416406624291,
+        "median": 0.4558889590958703,
+        "min": 0.4522346758823866,
+        "max": 0.547786879543333,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "spectral_dev_db": {
+        "mean": 4.040935806253714,
+        "std": 0.16909143033425972,
+        "median": 4.10770602920964,
+        "min": 3.8296766358206042,
+        "max": 4.267878614733483,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "spectral_dev_db_50_12k": {
+        "mean": 4.041294463599044,
+        "std": 0.16890461940118434,
+        "median": 4.107997030687874,
+        "min": 3.830202417368817,
+        "max": 4.2677498404845675,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "rt60_s": {
+        "mean": 2.8147657258459304,
+        "std": 0.007178748041968172,
+        "median": 2.81272569767075,
+        "min": 2.804971997665436,
+        "max": 2.824899366628107,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      },
+      "edt_s": {
+        "mean": 2.9220849189990554,
+        "std": 0.05897269233648863,
+        "median": 2.8931577111347386,
+        "min": 2.8754418699639426,
+        "max": 3.0352602675139115,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      },
+      "ringiness": {
+        "mean": 10.967889186897228,
+        "std": 0.7910827496757037,
+        "median": 10.665078200723741,
+        "min": 9.979664430724519,
+        "max": 12.032639483354403,
+        "n": 5.0,
+        "wins_count_vs_fixed": 5.0
+      },
+      "kurtosis_mean_50_300ms": {
+        "mean": 808.2228598107071,
+        "std": 26.382180228833736,
+        "median": 818.7299132178332,
+        "min": 773.1656224063272,
+        "max": 841.5321382279914,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      },
+      "echo_density_events_per_s_50_300ms": {
+        "mean": 124.0,
+        "std": 0.0,
+        "median": 124.0,
+        "min": 124.0,
+        "max": 124.0,
+        "n": 5.0,
+        "wins_count_vs_fixed": 0.0
+      }
+    }
+  },
+  "delta_vs_fixed": {
+    "u_only": {
+      "spectral_dev_db_50_12k": {
+        "mean": 1.0967846963499297,
+        "std": 0.9139588409430863,
+        "median": 0.818170223310184,
+        "min": 0.012497706000973885,
+        "max": 2.4759900570278486,
+        "n": 5.0
+      },
+      "spectral_loss_like_50_12k": {
+        "mean": -0.10499861619298041,
+        "std": 0.2571044648192906,
+        "median": -0.04180798273880404,
+        "min": -0.4765868958452327,
+        "max": 0.21016616688686396,
+        "n": 5.0
+      },
+      "ringiness": {
+        "mean": -1.2345658163804036,
+        "std": 4.832631072790788,
+        "median": 1.9191685763373378,
+        "min": -8.375434708313634,
+        "max": 3.3239703833566523,
+        "n": 5.0
+      },
+      "echo_density_events_per_s_50_300ms": {
+        "mean": 0.0,
+        "std": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "n": 5.0
+      }
+    },
+    "full": {
+      "spectral_dev_db_50_12k": {
+        "mean": 3.7925111246354817,
+        "std": 0.16890461940118445,
+        "median": 3.725808557546652,
+        "min": 3.5660557477499584,
+        "max": 4.003603170865709,
+        "n": 5.0
+      },
+      "spectral_loss_like_50_12k": {
+        "mean": 0.37164080768128194,
+        "std": 0.03691416406624291,
+        "median": 0.3967709701360513,
+        "min": 0.3048730496885885,
+        "max": 0.400425253349535,
+        "n": 5.0
+      },
+      "ringiness": {
+        "mean": 5.136419765616599,
+        "std": 0.7910826811245515,
+        "median": 5.439230720903357,
+        "min": 4.071669561679,
+        "max": 6.124644460402028,
+        "n": 5.0
+      },
+      "echo_density_events_per_s_50_300ms": {
+        "mean": 0.0,
+        "std": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "n": 5.0
+      }
+    }
+  },
+  "paths": {
+    "aggregate_summary_csv": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/aggregate_summary.csv",
+    "aggregate_deltas_csv": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/aggregate_deltas.csv",
+    "aggregate_stats_json": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/aggregate_stats.json",
+    "wins_table_csv": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_spread_rt60_2p8_bank/wins_table.csv"
+  }
+}

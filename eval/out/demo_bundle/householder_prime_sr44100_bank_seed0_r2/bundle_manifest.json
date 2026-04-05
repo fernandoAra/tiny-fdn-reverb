@@ -1,0 +1,31 @@
+{
+  "timestamp_utc": "2026-03-13T15:40:26.787815+00:00",
+  "git_commit": "0a87ffe7a9995207543f9b461a44bc5c3c04cc84",
+  "canonical_preset_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_prime_sr44100_bank/seed0/best_preset.json",
+  "canonical_config_id": "householder_prime_sr44100_bank_seed0_r2",
+  "compare_repro_command": "python eval/scripts/compare_fixed_vs_diff.py --preset /Users/user/Documents/GitHub/tiny-fdn-reverb/eval/figs/multiseed/householder_prime_sr44100_bank/seed0/best_preset.json --scope all --sanity-check --export-demo-wavs --level-match-method lufs --level-match-target fixed --require-lufs --demo-stimulus input_wav --demo-input-wav eval/signals/dry/Alda_44100.wav",
+  "plugin_header_synced": false,
+  "plugin_header_path": "/Users/user/Documents/GitHub/tiny-fdn-reverb/plugins/tiny-fdn-reverb/DiffFdnPresets.hpp",
+  "bundle_files": [
+    "bundle_manifest.json",
+    "demo_householder_prime_sr44100_bank_seed0_r2_fixed_matched.wav",
+    "demo_householder_prime_sr44100_bank_seed0_r2_fixed_raw.wav",
+    "demo_householder_prime_sr44100_bank_seed0_r2_full_matched.wav",
+    "demo_householder_prime_sr44100_bank_seed0_r2_full_raw.wav",
+    "demo_householder_prime_sr44100_bank_seed0_r2_u_only_matched.wav",
+    "demo_householder_prime_sr44100_bank_seed0_r2_u_only_raw.wav",
+    "demo_manifest.json",
+    "fixed_vs_diff_diffusion.png",
+    "fixed_vs_diff_irfft_overlay.png",
+    "fixed_vs_diff_mag_overlay.png",
+    "fixed_vs_diff_metrics_bars.png",
+    "fixed_vs_diff_run.json",
+    "summary_fixed_vs_diff.csv"
+  ],
+  "level_match_method_requested": "lufs",
+  "level_match_method_used": "lufs",
+  "level_match_target_policy": "fixed",
+  "scope": "all",
+  "sample_rate": 44100,
+  "note": "Defense bundle: matched demo WAVs are the primary fairness-controlled listening evidence; live plugin switching is secondary realtime proof."
+}

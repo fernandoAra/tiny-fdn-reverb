@@ -48,6 +48,23 @@ public:
     };
 
     static constexpr uint32_t kEnvTraceSize = 256u;
+    static constexpr uint32_t kUiMatrixSize = 4u;
+
+    struct UiStateSnapshot {
+        float matrixMorphTarget = 0.f;
+        float matrixMorphApplied = 0.f;
+        int householderMode = 0;
+        int diffRoutingMode = 0;
+        int diffPresetIndex = -1;
+        std::array<float, kUiMatrixSize> fixedU{{0.5f, 0.5f, 0.5f, 0.5f}};
+        std::array<float, kUiMatrixSize> activeU{{0.5f, 0.5f, 0.5f, 0.5f}};
+        std::array<float, kUiMatrixSize> fixedB{{0.25f, 0.25f, 0.25f, 0.25f}};
+        std::array<float, kUiMatrixSize> activeB{{0.25f, 0.25f, 0.25f, 0.25f}};
+        std::array<float, kUiMatrixSize> fixedCL{{0.5f, -0.5f, 0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> activeCL{{0.5f, -0.5f, 0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> fixedCR{{0.5f, 0.5f, -0.5f, -0.5f}};
+        std::array<float, kUiMatrixSize> activeCR{{0.5f, 0.5f, -0.5f, -0.5f}};
+    };
 
     PluginTinyFdnReverb();
     ~PluginTinyFdnReverb() override {}
@@ -95,46 +112,39 @@ public:
         return bitsToFloat(mWetEnvBits.load(std::memory_order_relaxed));
     }
 
-    float getMatrixMorph() const noexcept
+    void copyUiStateSnapshot(UiStateSnapshot& out) const noexcept
     {
-        return fMatrixMorph;
+        out.matrixMorphTarget = bitsToFloat(mUiStateMorphTargetBits.load(std::memory_order_acquire));
+        out.matrixMorphApplied = bitsToFloat(mUiStateMorphAppliedBits.load(std::memory_order_acquire));
+        out.householderMode = mUiStateHouseholderMode.load(std::memory_order_acquire);
+        out.diffRoutingMode = mUiStateDiffRoutingMode.load(std::memory_order_acquire);
+        out.diffPresetIndex = mUiStatePresetIndex.load(std::memory_order_acquire);
+
+        for (uint32_t i = 0; i < kUiMatrixSize; ++i) {
+            out.fixedU[i] = mHouseholderUFixed[i];
+            out.activeU[i] = bitsToFloat(mUiStateActiveUBits[i].load(std::memory_order_relaxed));
+            out.fixedB[i] = mInjectionBFixed[i];
+            out.activeB[i] = bitsToFloat(mUiStateActiveBBits[i].load(std::memory_order_relaxed));
+            out.fixedCL[i] = mOutputCLFixed[i];
+            out.activeCL[i] = bitsToFloat(mUiStateActiveCLBits[i].load(std::memory_order_relaxed));
+            out.fixedCR[i] = mOutputCRFixed[i];
+            out.activeCR[i] = bitsToFloat(mUiStateActiveCRBits[i].load(std::memory_order_relaxed));
+        }
     }
 
-    int getHouseholderMode() const noexcept
+    static const DiffPreset* getDiffPresetByIndex(int index) noexcept
     {
-        return fHouseholderMode;
-    }
+        if (index < 0 || index >= static_cast<int>(kDiffPresetCount))
+            return nullptr;
 
-    int getDiffRoutingMode() const noexcept
-    {
-        return mDiffRoutingMode;
-    }
-
-    float getActiveInjectionB(const uint32_t index) const noexcept
-    {
-        return mInjectionBActive[index & (kN - 1u)];
-    }
-
-    float getActiveOutputCL(const uint32_t index) const noexcept
-    {
-        return mOutputCLActive[index & (kN - 1u)];
-    }
-
-    void markHouseholderTouchedByUI() noexcept
-    {
-        mHouseholderTouchedByUI.store(true, std::memory_order_release);
-    }
-
-    void tagHouseholderModeUiSeq(uint32_t seq) noexcept
-    {
-        mUiHouseholderSeq.store(seq, std::memory_order_release);
+        return &kDiffPresets[index];
     }
 
     void setMatrixMorphFromUI(float v) noexcept
     {
         const float vm = (v < 0.f) ? 0.f : (v > 1.f ? 1.f : v);
-        fMatrixMorph = vm;
-        fMatrixType = (vm < 0.5f) ? 0 : 1;
+        mUiMatrixMorphRequestBits.store(floatToBits(vm), std::memory_order_relaxed);
+        mUiMatrixMorphRequestSeq.fetch_add(1u, std::memory_order_release);
     }
 
 protected:
@@ -190,6 +200,7 @@ private:
     float  fSize        = 1.0f;
     float  fDampHz      = 6000.f;
     float  fMatrixMorph = 0.0f;
+    float  fMatrixMorphApplied = 0.0f;
     int    fPing        = 0;
     int    fHouseholderMode = 0; // 0 fixed, 1 Diff preset u
 
@@ -268,10 +279,18 @@ private:
     std::atomic<uint32_t> mDen300Bits{0u};
     std::atomic<uint32_t> mRinginessBits{0u};
     std::atomic<uint32_t> mWetEnvBits{0u};
-    std::atomic<uint32_t> mUiHouseholderSeq{0u};
-    std::atomic<uint32_t> mUiHouseholderSeqAck{0u};
-    std::atomic<bool> mHouseholderTouchedByUI{false};
-    std::atomic<uint64_t> mHouseholderIgnoreLogMs{0u};
+    std::atomic<uint32_t> mUiMatrixMorphRequestBits{0u};
+    std::atomic<uint32_t> mUiMatrixMorphRequestSeq{0u};
+    uint32_t mAppliedUiMatrixMorphRequestSeq = 0u;
+    std::atomic<uint32_t> mUiStateMorphTargetBits{0u};
+    std::atomic<uint32_t> mUiStateMorphAppliedBits{0u};
+    std::atomic<int> mUiStateHouseholderMode{0};
+    std::atomic<int> mUiStateDiffRoutingMode{0};
+    std::atomic<int> mUiStatePresetIndex{-1};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveUBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveBBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveCLBits{};
+    std::array<std::atomic<uint32_t>, kUiMatrixSize> mUiStateActiveCRBits{};
 
     // smoothers (init with a default SR; reconfigured on SR change)
     CParamSmooth fMixSmoothL  {10.0f, 48000.0};
@@ -308,6 +327,8 @@ private:
     void updateLineGainsFromRt60(double sr) noexcept;
     void updateDiffPresetForContext(double sr) noexcept;
     void updateActiveHouseholderU() noexcept;
+    void publishUiState() noexcept;
+    static int findDiffPresetIndex(const DiffPreset* preset) noexcept;
     static bool isFiniteVector(const std::array<float, kN>& v) noexcept;
     static float maxAbsDiff(const std::array<float, kN>& a, const std::array<float, kN>& b) noexcept;
     static void normalizeHouseholderU(std::array<float, kN>& u) noexcept;
@@ -315,7 +336,12 @@ private:
     inline void householderMix4U(const float in[kN], const float u[kN], float out[kN]) const noexcept;
     inline void householderMix4(const float in[kN], float out[kN]) const noexcept;
     void computeRinginess(double sr) noexcept;
-    static uint32_t floatToBits(float value) noexcept;
+    static uint32_t floatToBits(float value) noexcept
+    {
+        uint32_t bits = 0u;
+        std::memcpy(&bits, &value, sizeof(float));
+        return bits;
+    }
     static float bitsToFloat(uint32_t bits) noexcept
     {
         float value = 0.f;

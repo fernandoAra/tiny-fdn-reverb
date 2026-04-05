@@ -17,6 +17,7 @@ import csv
 import datetime as dt
 import json
 import math
+import matplotlib.ticker as mticker
 import shlex
 import shutil
 import subprocess
@@ -1189,6 +1190,7 @@ def _plot_overlay_with_delta(
     db_by_mode: Dict[str, np.ndarray],
     smooth_bins: int,
     y_axis_label: str,
+    min_freq_hz: float,
     max_freq_hz: float,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1196,7 +1198,7 @@ def _plot_overlay_with_delta(
     smoothed: Dict[str, np.ndarray] = {
         k: _moving_average(v, smooth_bins) for k, v in db_by_mode.items()
     }
-    freq_mask = freqs <= float(max_freq_hz)
+    freq_mask = (freqs >= float(min_freq_hz)) & (freqs <= float(max_freq_hz))
     if not np.any(freq_mask):
         freq_mask = np.ones_like(freqs, dtype=bool)
     freqs_plot = freqs[freq_mask]
@@ -1299,6 +1301,124 @@ def _plot_overlay_with_delta(
     plt.close(fig)
 
 
+def _format_log_freq_tick(value: float, _pos: float) -> str:
+    if value >= 1000.0:
+        if abs(value % 1000.0) < 1e-6:
+            return f"{int(round(value / 1000.0))}k"
+        return f"{value / 1000.0:.1f}k"
+    if value >= 1.0:
+        return f"{int(round(value))}"
+    return ""
+
+
+def _plot_smoothed_overlay(
+    out_path: Path,
+    *,
+    title: str,
+    freqs: np.ndarray,
+    db_by_mode: Dict[str, np.ndarray],
+    smooth_bins: int,
+    y_axis_label: str,
+    min_freq_hz: float,
+    max_freq_hz: float,
+    log_x_axis: bool,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    freq_mask = (freqs >= float(min_freq_hz)) & (freqs <= float(max_freq_hz))
+    if not np.any(freq_mask):
+        freq_mask = np.ones_like(freqs, dtype=bool)
+    if log_x_axis and np.any(freq_mask) and float(freqs[freq_mask][0]) <= 0.0:
+        freq_mask = freq_mask & (freqs > 0.0)
+        if not np.any(freq_mask):
+            freq_mask = freqs > 0.0
+    freqs_band = freqs[freq_mask]
+    if freqs_band.size == 0:
+        return
+
+    if log_x_axis:
+        freqs_plot = np.geomspace(float(freqs_band[0]), float(freqs_band[-1]), num=900)
+        smoothed: Dict[str, np.ndarray] = {}
+        for mode_key, values in db_by_mode.items():
+            band_values = values[freq_mask]
+            interp_values = np.interp(freqs_plot, freqs_band, band_values)
+            smoothed[mode_key] = _moving_average(interp_values, smooth_bins)
+    else:
+        freqs_plot = freqs_band
+        smoothed = {k: _moving_average(v[freq_mask], smooth_bins) for k, v in db_by_mode.items()}
+
+    fig, ax = plt.subplots(figsize=(10.4, 4.8))
+    ax.set_title(title, fontsize=PLOT_TITLE_FONTSIZE)
+
+    draw_order = ["full", "fixed", "u_only"]
+    line_styles = {
+        "fixed": "solid",
+        "u_only": (0, (7.0, 2.2)),
+        "full": (0, (8.0, 2.0, 2.0, 2.0)),
+    }
+    z_orders = {"full": 2, "fixed": 3, "u_only": 4}
+    line_widths = {"fixed": 2.35, "u_only": 2.25, "full": 2.05}
+    handles_by_mode: Dict[str, object] = {}
+    for mode_key in draw_order:
+        if mode_key not in smoothed:
+            continue
+        line, = ax.plot(
+            freqs_plot,
+            smoothed[mode_key],
+            label=MODE_LABELS[mode_key],
+            lw=line_widths.get(mode_key, 2.2),
+            color=MODE_COLORS[mode_key],
+            ls=line_styles.get(mode_key, "solid"),
+            alpha=0.96,
+            zorder=z_orders.get(mode_key, 3),
+            solid_capstyle="round",
+        )
+        handles_by_mode[mode_key] = line
+
+    ax.axhline(0.0, color="0.55", lw=0.9, ls="--", zorder=1)
+    ax.set_xlabel("Frequency (Hz)", fontsize=PLOT_LABEL_FONTSIZE)
+    ax.set_ylabel(y_axis_label, fontsize=PLOT_LABEL_FONTSIZE)
+    ax.set_xlim(float(freqs_plot[0]), float(freqs_plot[-1]))
+    if log_x_axis:
+        ax.set_xscale("log")
+        tick_values = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0]
+        tick_values = [t for t in tick_values if float(freqs_plot[0]) <= t <= float(freqs_plot[-1])]
+        if tick_values:
+            ax.xaxis.set_major_locator(mticker.FixedLocator(tick_values))
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(_format_log_freq_tick))
+        ax.xaxis.set_minor_locator(mticker.LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1))
+        ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    y_candidates = []
+    for mode_key in smoothed:
+        vals = smoothed[mode_key]
+        vals = vals[np.isfinite(vals)]
+        if vals.size > 0:
+            y_candidates.append(vals)
+    if y_candidates:
+        y_all = np.concatenate(y_candidates)
+        y_min = float(np.percentile(y_all, 1.0))
+        y_max = float(np.percentile(y_all, 99.0))
+        pad = 0.12 * max(1e-6, y_max - y_min)
+        ax.set_ylim(y_min - pad, y_max + pad)
+
+    legend_handles = [handles_by_mode[k] for k in MODE_ORDER if k in handles_by_mode]
+    legend_labels = [MODE_LABELS[k] for k in MODE_ORDER if k in handles_by_mode]
+    ax.legend(
+        legend_handles,
+        legend_labels,
+        fontsize=PLOT_LEGEND_FONTSIZE,
+        loc="best",
+        framealpha=0.92,
+    )
+    ax.grid(which="major", alpha=0.22, lw=0.8)
+    ax.grid(which="minor", alpha=0.08, lw=0.45)
+    ax.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)
+
+
 def _plot_diffusion_curve(
     out_path: Path,
     *,
@@ -1383,10 +1503,13 @@ def _plot_edc_overlay(
     *,
     config_id: str,
     results: Dict[str, ScenarioResult],
+    plot_max_seconds: float = 0.0,
+    title_override: str | None = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(12.5, 5.2))
-    ax.set_title(f"EDC overlay ({config_id})", fontsize=PLOT_TITLE_FONTSIZE)
+    title = title_override.strip() if isinstance(title_override, str) and title_override.strip() else f"EDC overlay ({config_id})"
+    ax.set_title(title, fontsize=PLOT_TITLE_FONTSIZE)
     ax.axhspan(-10.0, 0.0, color="0.95", alpha=0.8, label="EDT fit band (0 to -10 dB)")
     ax.axhspan(-25.0, -5.0, color="0.92", alpha=0.7, label="T20 fit band (-5 to -25 dB)")
     ax.axhspan(-35.0, -5.0, color="0.88", alpha=0.45, label="T30 fit band (-5 to -35 dB)")
@@ -1406,6 +1529,8 @@ def _plot_edc_overlay(
     ax.set_xlabel("Time (s)", fontsize=PLOT_LABEL_FONTSIZE)
     ax.set_ylabel("EDC (dB)", fontsize=PLOT_LABEL_FONTSIZE)
     ax.set_ylim(-80.0, 2.0)
+    if plot_max_seconds > 0.0:
+        ax.set_xlim(0.0, float(plot_max_seconds))
     ax.grid(alpha=0.25)
     ax.legend(fontsize=PLOT_LEGEND_FONTSIZE, loc="upper right")
     ax.tick_params(labelsize=PLOT_LEGEND_FONTSIZE)
@@ -1786,6 +1911,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--smooth-bins", type=int, default=25, help="Smoothing window for dB overlays")
+    parser.add_argument(
+        "--irfft-plot-smooth-bins",
+        type=int,
+        default=0,
+        help="Optional smoothing window for the paper-facing IR FFT overlay; 0 reuses --smooth-bins.",
+    )
+    parser.add_argument(
+        "--min-freq-hz",
+        type=float,
+        default=0.0,
+        help="Minimum frequency shown in magnitude overlays",
+    )
     parser.add_argument("--max-freq-hz", type=float, default=12000.0, help="Max frequency shown in overlays")
     parser.add_argument(
         "--paper-band-min-hz",
@@ -1804,6 +1941,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.5,
         help="Max x-axis time for diffusion/echo figure (s)",
+    )
+    parser.add_argument(
+        "--edc-plot-max-seconds",
+        type=float,
+        default=0.0,
+        help="Optional max x-axis time for EDC overlay (s); 0 keeps full duration.",
+    )
+    parser.add_argument(
+        "--edc-title",
+        default="",
+        help="Optional title override for the EDC overlay figure.",
+    )
+    parser.add_argument(
+        "--irfft-title",
+        default="",
+        help="Optional title override for the IR FFT overlay figure.",
     )
     parser.add_argument(
         "--sanity-check",
@@ -2514,21 +2667,26 @@ def main() -> None:
             db_by_mode=analytic_db_by_mode,
             smooth_bins=args.smooth_bins,
             y_axis_label="Magnitude (dB, mean-normalized)",
+            min_freq_hz=float(args.min_freq_hz),
             max_freq_hz=float(args.max_freq_hz),
         )
-        _plot_overlay_with_delta(
+        _plot_smoothed_overlay(
             irfft_fig,
-            title=f"IR FFT (windowed) magnitude ({base_config_id}, {decay_tag})",
+            title=str(args.irfft_title).strip() if str(args.irfft_title).strip() else f"IR FFT (windowed) magnitude ({base_config_id}, {decay_tag})",
             freqs=freqs,
             db_by_mode=ir_db_by_mode,
-            smooth_bins=args.smooth_bins,
+            smooth_bins=int(args.irfft_plot_smooth_bins) if int(args.irfft_plot_smooth_bins) > 0 else int(args.smooth_bins),
             y_axis_label="Magnitude (dB, mean-normalized)",
+            min_freq_hz=float(args.min_freq_hz),
             max_freq_hz=float(args.max_freq_hz),
+            log_x_axis=True,
         )
         _plot_edc_overlay(
             edc_fig,
             config_id=f"{base_config_id}, {decay_tag}",
             results=scenario_results,
+            plot_max_seconds=float(args.edc_plot_max_seconds),
+            title_override=str(args.edc_title),
         )
         _plot_diffusion_curve(
             diffusion_fig,

@@ -243,11 +243,12 @@ def _plot_metrics_errorbars(
 def _plot_deltas_errorbars(
     out_path: Path,
     *,
+    delta_rows: Sequence[Dict[str, object]],
     delta_stats: Dict[str, Dict[str, Dict[str, float]]],
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.0))
-    fig.suptitle("multiseed improvement vs fixed (mean ± std)", fontsize=15)
+    fig.suptitle("multiseed improvement vs fixed (per-seed points + mean ± std)", fontsize=15)
     scen_order = ["u_only", "full"]
     scen_labels = [MODE_LABELS[m] for m in scen_order]
     scen_colors = [MODE_COLORS[m] for m in scen_order]
@@ -255,20 +256,70 @@ def _plot_deltas_errorbars(
 
     for i, metric in enumerate(DELTA_METRICS):
         ax = axes.flat[i]
+        ax.axhline(0.0, color="0.45", lw=1.0, ls="--", zorder=1)
         means = [delta_stats.get(m, {}).get(metric, {}).get("mean", np.nan) for m in scen_order]
         stds = [delta_stats.get(m, {}).get(metric, {}).get("std", np.nan) for m in scen_order]
-        ax.bar(x, means, yerr=stds, capsize=4, color=scen_colors, alpha=0.9)
-        ax.axhline(0.0, color="0.45", lw=1.0, ls="--")
+        for j, scenario in enumerate(scen_order):
+            seed_rows = [
+                row
+                for row in delta_rows
+                if str(row.get("scenario", "")).strip() == scenario and str(row.get("metric", "")).strip() == metric
+            ]
+            seed_rows = sorted(seed_rows, key=lambda row: int(_safe_float(row.get("seed", 0))))
+            vals = np.asarray([_safe_float(row.get("delta_vs_fixed", float("nan"))) for row in seed_rows], dtype=np.float64)
+            vals = vals[np.isfinite(vals)]
+            if vals.size > 0:
+                jitter = (
+                    np.linspace(-0.12, 0.12, vals.size, dtype=np.float64)
+                    if vals.size > 1
+                    else np.zeros(1, dtype=np.float64)
+                )
+                ax.scatter(
+                    np.full(vals.size, x[j], dtype=np.float64) + jitter,
+                    vals,
+                    s=36,
+                    color=scen_colors[j],
+                    alpha=0.75,
+                    edgecolors="white",
+                    linewidths=0.7,
+                    zorder=3,
+                )
+            mean_v = means[j]
+            std_v = stds[j]
+            if np.isfinite(mean_v):
+                ax.errorbar(
+                    x[j],
+                    mean_v,
+                    yerr=std_v if np.isfinite(std_v) else None,
+                    fmt="D",
+                    ms=7,
+                    mfc="white",
+                    mec=scen_colors[j],
+                    mew=1.5,
+                    ecolor=scen_colors[j],
+                    elinewidth=1.5,
+                    capsize=5,
+                    capthick=1.5,
+                    zorder=4,
+                )
         subtitle = DELTA_DIRECTION.get(metric, "")
         title = METRIC_LABELS.get(metric, metric)
         if subtitle:
             title = f"{title}\n({subtitle})"
         ax.set_title(title, fontsize=10)
         ax.set_xticks(x, scen_labels, rotation=10, ha="right")
-        ax.set_ylabel("improvement (+ better)", fontsize=10)
+        ax.set_ylabel("improvement vs fixed\n(+ better)", fontsize=10)
         ax.grid(axis="y", alpha=0.25)
         ax.tick_params(labelsize=9)
 
+    fig.text(
+        0.5,
+        0.01,
+        "points = individual seeds, diamonds = mean ± std",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
@@ -282,6 +333,8 @@ def _plot_curve_mean_std(
     curves_by_mode: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
     summary_tmin: float,
     summary_tmax: float,
+    x_max: float | None = None,
+    y_min: float | None = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(12, 5))
@@ -299,9 +352,85 @@ def _plot_curve_mean_std(
     ax.set_ylabel(ylabel, fontsize=12)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=10)
+    if x_max is not None and x_max > 0.0:
+        ax.set_xlim(0.0, float(x_max))
+    if y_min is not None:
+        ax.set_ylim(bottom=float(y_min))
     fig.tight_layout()
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
+
+
+def _append_curves_from_run_payload(
+    payload: Dict[str, object],
+    *,
+    curves_kurt: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
+    curves_echo: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
+) -> None:
+    modes = payload.get("modes", {})
+    for mode in MODE_ORDER:
+        mode_payload = modes.get(mode)
+        if not isinstance(mode_payload, dict):
+            continue
+        curves = mode_payload.get("curves", {})
+        if not isinstance(curves, dict):
+            continue
+        kurt = curves.get("kurtosis", {})
+        echo = curves.get("echo_density", {})
+        t_k = np.asarray(kurt.get("t", []), dtype=np.float64)
+        y_k = np.asarray(kurt.get("y", []), dtype=np.float64)
+        t_e = np.asarray(echo.get("t", []), dtype=np.float64)
+        y_e = np.asarray(echo.get("y", []), dtype=np.float64)
+        if t_k.size > 1 and y_k.size > 1:
+            curves_kurt[mode].append((t_k, y_k))
+        if t_e.size > 1 and y_e.size > 1:
+            curves_echo[mode].append((t_e, y_e))
+
+
+def _write_multiseed_paper_figures(
+    *,
+    paper_dir: Path,
+    config_id: str,
+    stats_by_mode: Dict[str, Dict[str, Dict[str, float]]],
+    delta_rows: Sequence[Dict[str, object]],
+    delta_stats: Dict[str, Dict[str, Dict[str, float]]],
+    curves_kurt: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
+    curves_echo: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
+    summary_tmin: float,
+    summary_tmax: float,
+) -> None:
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    metrics_fig = paper_dir / "multiseed_metrics_errorbars.png"
+    deltas_fig = paper_dir / "multiseed_deltas_errorbars.png"
+    diffusion_fig = paper_dir / "multiseed_diffusion_meanstd.png"
+    echo_fig = paper_dir / "multiseed_echo_density_meanstd.png"
+
+    _plot_metrics_errorbars(metrics_fig, stats_by_mode)
+    _plot_deltas_errorbars(deltas_fig, delta_rows=delta_rows, delta_stats=delta_stats)
+    _plot_curve_mean_std(
+        diffusion_fig,
+        title=f"multiseed impulsiveness proxy (kurtosis, exploratory) ({config_id})",
+        ylabel="excess kurtosis (lower = less impulsive)",
+        curves_by_mode=curves_kurt,
+        summary_tmin=summary_tmin,
+        summary_tmax=summary_tmax,
+    )
+    _plot_curve_mean_std(
+        echo_fig,
+        title=f"multiseed echo-density proxy ({config_id})",
+        ylabel="events/s",
+        curves_by_mode=curves_echo,
+        summary_tmin=summary_tmin,
+        summary_tmax=summary_tmax,
+        x_max=0.5,
+        y_min=0.0,
+    )
+
+    print("Wrote multiseed paper figures:")
+    print(f"  - {metrics_fig}")
+    print(f"  - {deltas_fig}")
+    print(f"  - {diffusion_fig}")
+    print(f"  - {echo_fig}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -376,6 +505,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Root output dir (default: eval/figs/multiseed/<config-id>)",
     )
+    parser.add_argument(
+        "--reuse-existing-data",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip optimizer/compare and redraw paper figures from existing multiseed outputs under out-root.",
+    )
     # Backwards-compat aliases.
     parser.add_argument("--preset-dir", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fig-root", default=None, help=argparse.SUPPRESS)
@@ -413,6 +548,43 @@ def main() -> None:
     effective_learn_io = bool(args.learn_io or force_learn_io)
     if force_learn_io and not bool(args.learn_io):
         print("[Info] force-learn-io enabled by scope; overriding --no-learn-io.")
+
+    if bool(args.reuse_existing_data):
+        aggregate_stats = run_root / "aggregate_stats.json"
+        aggregate_deltas = run_root / "aggregate_deltas.csv"
+        if not aggregate_stats.is_file():
+            raise RuntimeError(f"Missing existing aggregate stats: {aggregate_stats}")
+        if not aggregate_deltas.is_file():
+            raise RuntimeError(f"Missing existing aggregate deltas: {aggregate_deltas}")
+
+        aggregate_payload = json.loads(aggregate_stats.read_text())
+        stats_by_mode = aggregate_payload.get("metrics", {})
+        delta_stats = aggregate_payload.get("delta_vs_fixed", {})
+        delta_rows = _read_csv_rows(aggregate_deltas)
+        for seed in seeds:
+            run_json = run_root / f"seed{seed}" / "fixed_vs_diff_run.json"
+            if not run_json.is_file():
+                raise RuntimeError(f"Missing per-seed run payload for reuse mode: {run_json}")
+            _append_curves_from_run_payload(
+                json.loads(run_json.read_text()),
+                curves_kurt=curves_kurt,
+                curves_echo=curves_echo,
+            )
+
+        _write_multiseed_paper_figures(
+            paper_dir=paper_dir,
+            config_id=args.config_id,
+            stats_by_mode=stats_by_mode,
+            delta_rows=delta_rows,
+            delta_stats=delta_stats,
+            curves_kurt=curves_kurt,
+            curves_echo=curves_echo,
+            summary_tmin=float(args.echo_density_tmin),
+            summary_tmax=float(args.echo_density_tmax),
+        )
+        print(f"Reused aggregate stats:  {aggregate_stats}")
+        print(f"Reused aggregate deltas: {aggregate_deltas}")
+        return
 
     selected_preset_by_seed: Dict[int, Path] = {}
 
@@ -634,22 +806,7 @@ def main() -> None:
                 "compare_fixed_vs_diff.py did not produce fixed_vs_diff_run.json."
             )
         payload = json.loads(run_json.read_text())
-        modes = payload.get("modes", {})
-        for mode in MODE_ORDER:
-            mode_payload = modes.get(mode)
-            if not isinstance(mode_payload, dict):
-                continue
-            curves = mode_payload.get("curves", {})
-            kurt = curves.get("kurtosis", {})
-            echo = curves.get("echo_density", {})
-            t_k = np.asarray(kurt.get("t", []), dtype=np.float64)
-            y_k = np.asarray(kurt.get("y", []), dtype=np.float64)
-            t_e = np.asarray(echo.get("t", []), dtype=np.float64)
-            y_e = np.asarray(echo.get("y", []), dtype=np.float64)
-            if t_k.size > 1 and y_k.size > 1:
-                curves_kurt[mode].append((t_k, y_k))
-            if t_e.size > 1 and y_e.size > 1:
-                curves_echo[mode].append((t_e, y_e))
+        _append_curves_from_run_payload(payload, curves_kurt=curves_kurt, curves_echo=curves_echo)
 
     if args.dry_run:
         print("Dry run complete.")
@@ -801,28 +958,14 @@ def main() -> None:
     }
     aggregate_stats.write_text(json.dumps(aggregate_payload, indent=2) + "\n")
 
-    paper_dir.mkdir(parents=True, exist_ok=True)
-    metrics_fig = paper_dir / "multiseed_metrics_errorbars.png"
-    deltas_fig = paper_dir / "multiseed_deltas_errorbars.png"
-    improvement_fig = paper_dir / "multiseed_improvement_errorbars.png"
-    diffusion_fig = paper_dir / "multiseed_diffusion_meanstd.png"
-    echo_fig = paper_dir / "multiseed_echo_density_meanstd.png"
-    _plot_metrics_errorbars(metrics_fig, stats_by_mode)
-    _plot_deltas_errorbars(deltas_fig, delta_stats=delta_stats)
-    _plot_deltas_errorbars(improvement_fig, delta_stats=delta_stats)
-    _plot_curve_mean_std(
-        diffusion_fig,
-        title=f"multiseed impulsiveness proxy (kurtosis, exploratory) ({args.config_id})",
-        ylabel="excess kurtosis (lower = less impulsive)",
-        curves_by_mode=curves_kurt,
-        summary_tmin=float(args.echo_density_tmin),
-        summary_tmax=float(args.echo_density_tmax),
-    )
-    _plot_curve_mean_std(
-        echo_fig,
-        title=f"multiseed echo-density proxy ({args.config_id})",
-        ylabel="events/s",
-        curves_by_mode=curves_echo,
+    _write_multiseed_paper_figures(
+        paper_dir=paper_dir,
+        config_id=args.config_id,
+        stats_by_mode=stats_by_mode,
+        delta_rows=delta_rows,
+        delta_stats=delta_stats,
+        curves_kurt=curves_kurt,
+        curves_echo=curves_echo,
         summary_tmin=float(args.echo_density_tmin),
         summary_tmax=float(args.echo_density_tmax),
     )
@@ -834,13 +977,6 @@ def main() -> None:
     print(f"Wrote aggregate deltas:  {aggregate_deltas}")
     print(f"Wrote wins table:        {wins_table_csv}")
     print(f"Wrote aggregate stats:   {aggregate_stats}")
-    print("Wrote multiseed paper figures:")
-    print(f"  - {metrics_fig}")
-    print(f"  - {deltas_fig}")
-    print(f"  - {improvement_fig}")
-    print(f"  - {diffusion_fig}")
-    print(f"  - {echo_fig}")
-
 
 if __name__ == "__main__":
     main()
